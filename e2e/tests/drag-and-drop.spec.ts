@@ -147,7 +147,7 @@ test("publishes the draft to the Delivery API", async ({ page, request }) => {
   await expect(page.getByText("Published", { exact: true })).toBeVisible();
 
   const response = await request.get(
-    "http://localhost:4001/v1/pages?slug=/sports/football&locale=en",
+    "http://localhost:4001/v1/sites/st_demo/pages?slug=/sports/football&locale=en",
     {
       headers: { authorization: "Bearer bk_dlv_local_dev_only_000000000000" },
     },

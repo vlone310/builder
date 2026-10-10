@@ -13,10 +13,11 @@ This repo is the monorepo for every package in it.
 | `packages/core` | `@builder/core` | `defineComponent`, `fields.*`, page document types and schemas, JSON Schema manifests, migrations, validation, Delivery API client. No framework dependency. |
 | `packages/core` (editing) | `@builder/core` | JSON Patch (RFC 6902) with inverses, tree operations, editor ↔ host protocol and messenger |
 | `packages/react` | `@builder/react` | `<PageRenderer>`, `resolvePage` (loader runner), `<RichText>`; `@builder/react/edit`: the edit bridge (`<EditCanvas>`) |
-| `packages/next` | `@builder/next` | Edit-token verification (ES256, JWKS), the edit endpoint for loaders and options, the edit-route proxy rewrite |
+| `packages/next` | `@builder/next` | `createBuilderPages` (tagged fetches, draft mode), revalidate and preview route handlers, `builderProxy`, edit-mode helpers |
 | `packages/db` | `@builder/db` | Drizzle schema for the ten v1 tables, migrations with row-level security, tenancy helpers, demo seed |
 | `services/content-api` | `@builder/content-api` | Write API: sites, environments, API keys, pages, drafts, revisions, soft locks, publish |
-| `services/delivery-api` | `@builder/delivery-api` | Read-only API for published pages and regions, CDN cache headers |
+| `services/delivery-api` | `@builder/delivery-api` | Read-only API for published pages, regions and preview links, CDN cache headers |
+| `services/worker` | `@builder/worker` | Delivers the publish outbox: HMAC-signed webhooks with retries, CDN purge by cache tag |
 | `apps/sample-host` | `@builder/sample-host` | Next.js host app with sample `core/*` and `igaming/*` components and an edit route |
 | `apps/editor` | `@builder/editor` | The editor: page manager, canvas with overlays, palette, layers, props panel, drag-and-drop |
 | `e2e` | `@builder/e2e` | Playwright tests of the whole loop, including the drag-and-drop spike |
@@ -35,6 +36,7 @@ docker compose up -d                      # Postgres on localhost:5432 (builder/
 cp packages/db/.env.example packages/db/.env
 cp services/delivery-api/.env.example services/delivery-api/.env
 cp services/content-api/.env.example services/content-api/.env   # set CONTENT_API_JWT_SECRET
+cp services/worker/.env.example services/worker/.env
 cp apps/sample-host/.env.example apps/sample-host/.env.local
 cp apps/editor/.env.example apps/editor/.env
 
@@ -43,6 +45,7 @@ pnpm db:seed                              # demo org, site, delivery key and two
 pnpm build
 pnpm --filter @builder/delivery-api start # :4001
 pnpm --filter @builder/content-api start  # :4000
+pnpm --filter @builder/worker start       # :4002, delivers webhooks
 pnpm --filter @builder/sample-host start  # :3000
 pnpm --filter @builder/editor preview     # :5173
 ```
@@ -50,6 +53,9 @@ pnpm --filter @builder/editor preview     # :5173
 Open http://localhost:3000 and http://localhost:3000/sports/football. The football page includes
 an `acme/not-installed@1` node: it renders nothing on the live site and logs a warning, as the
 page model requires.
+
+Publishing from the editor reaches http://localhost:3000 within about a second: the worker
+sends the seeded demo webhook to the host, which revalidates the page.
 
 Open the editor at http://localhost:5173 and sign in with org `org_demo` and any user id (the
 dev sign-in is on in `.env.example`; never enable it in production). Pick the demo site and a
@@ -102,6 +108,14 @@ Roles: `admin` manages sites; `admin` and `developer` manage environments and AP
 | POST | `/v1/pages/:pageId/publish` | `{ revisionId }`; the previous published revision is archived |
 | POST | `/v1/pages/:pageId/unpublish` | |
 | POST | `/v1/edit-tokens` | `{ siteId, envId }` → a 10-minute ES256 token for that host environment |
+| GET, POST | `/v1/sites/:siteId/webhooks` | `{ url, events? }`; the signing secret is returned once |
+| DELETE | `/v1/webhooks/:webhookId` | |
+| GET | `/v1/webhooks/:webhookId/deliveries` | The last 50 deliveries with status, attempts and errors |
+| GET, POST | `/v1/pages/:pageId/preview-links` | `{ revisionId?, envId?, expiresInHours? }` → a share URL with a token, returned once |
+| POST | `/v1/preview-links/:linkId/revoke` | |
+
+Publishing, unpublishing, moving a published page's slug and deleting a published page each
+queue a signed webhook per endpoint and a CDN purge, in the same transaction.
 
 Outside `/v1`: `GET /.well-known/jwks.json` (public keys for edit tokens) and, only with
 `CONTENT_API_DEV_LOGIN=1`, `POST /auth/dev-login { orgId, userId, role }`.
@@ -109,12 +123,18 @@ Outside `/v1`: `GET /.well-known/jwks.json` (public keys for edit tokens) and, o
 ## Delivery API (v1)
 
 `Authorization: Bearer <delivery key>`. Responses carry `ETag` (the revision id),
-`Cache-Control: s-maxage=300` and `Cache-Tag: site:<id>,page:<id>` for CDN purges.
+`Cache-Control: s-maxage=300` and `Cache-Tag: builder:page:<id>,builder:slug:<site>:<locale>:<slug>,builder:site:<id>`
+for CDN purges.
 
 | Route | Notes |
 | --- | --- |
-| `GET /v1/pages?slug=/a/b&locale=en` | Published page document |
-| `GET /v1/regions/:name?locale=en` | Published region document |
+| `GET /v1/sites/:siteId/pages?slug=/a/b&locale=en` | Published page document |
+| `GET /v1/sites/:siteId/regions/:name?locale=en` | Published region document |
+| `GET /v1/sites/:siteId/preview?token=…` | The revision a preview link points at; `Cache-Control: private, no-store` |
+
+The site id is in every URL so that CDN caches, which key on the URL, never mix sites. A key
+only opens its own site's URLs. 404s are tagged with their address, so a first publish purges
+them.
 
 ## Tenancy
 
@@ -154,6 +174,26 @@ server-side.
 
 The drag-and-drop gate review is in [docs/phase-2-spike.md](docs/phase-2-spike.md).
 
+## Publishing (phase 3)
+
+1. **Publish** marks the revision published and, in the same transaction, writes outbox jobs:
+   one webhook per subscribed endpoint and one CDN purge (`packages/db/src/publishing.ts`).
+2. **The worker** claims due jobs with `FOR UPDATE SKIP LOCKED`, so several replicas never send
+   the same job twice. It POSTs each webhook with
+   `builder-signature: t=<unix>,v1=<HMAC-SHA256 of "t.body">` and retries failures with
+   backoff (10 s doubling to 1 h, 8 attempts). It purges Cloudflare by cache tag. It refuses
+   webhook URLs that resolve to private addresses and never follows redirects.
+3. **The host** verifies the signature (5-minute tolerance, two secrets during rotation) and
+   calls `revalidateTag` for the page's tags with `{ expire: 0 }`, so the next visitor gets a
+   fresh render. Fetches are tagged by address, so a slug that used to be a 404 refreshes too.
+4. **Preview links** carry a random token, stored hashed and bound to one revision, with an
+   expiry and revocation. The host's preview route checks the token with the Delivery API,
+   turns on Next.js draft mode and redirects to the page; only that page shows the draft.
+
+A Next.js host needs `proxy.ts` (`builderProxy`), `app/api/builder/revalidate/route.ts`,
+`app/api/builder/preview/route.ts` and `createBuilderPages` for its data. `apps/sample-host`
+has all four. Deploying the pilot is covered in [docs/pilot-deployment.md](docs/pilot-deployment.md).
+
 ## Decisions made while building phase 1
 
 - **Migration keys**: `migrations: { N: fn }` upgrades props *from* major N to N + 1.
@@ -182,6 +222,17 @@ The drag-and-drop gate review is in [docs/phase-2-spike.md](docs/phase-2-spike.m
   the `manifestHash` check against the Registry is not wired yet.
 - **A new page** starts with the first container component the host offers as its root.
 
+## Decisions made while building phase 3
+
+- **Outbox in Postgres** (`jobs` table) instead of a queue service: delivery rows double as the
+  webhook log in the editor's site settings.
+- **Preview tokens are opaque**, stored as SHA-256 hashes and checked by the Delivery API. A
+  signed token would add nothing, since showing a draft needs that lookup anyway, and revoking
+  is a single update.
+- **CDN purge is pluggable**: a Cloudflare adapter and a no-op adapter for development.
+- **Delivery API URLs include the site id** (breaking change from phase 1, before any external
+  client existed).
+
 ## Tests
 
 ```sh
@@ -207,9 +258,9 @@ They migrate and seed `E2E_DATABASE_URL` themselves. The spike's numbers land in
 
 1. **Foundations** (done): contract, page model, core and react packages, Content and Delivery
    APIs, sample host. Gate: the sample host renders a stored JSON page with SSR.
-2. **Editor MVP** (built; gate under review): iframe canvas, protocol v1, overlays, props panel from JSON Schema, layers,
+2. **Editor MVP** (done): iframe canvas, protocol v1, overlays, props panel from JSON Schema, layers,
    drag-and-drop. Gate: drag-and-drop spike review.
-3. **Publish**: preview links, signed webhooks, CDN purge, `@builder/next` with draft mode and
+3. **Publish** (built; gate needs the pilot deployment): preview links, signed webhooks, CDN purge, `@builder/next` with draft mode and
    tag revalidation. Gate: a first pilot tenant serves live pages.
 4. **Safety and scale**: `builder push` / `builder check` in CI, Registry, regions, assets,
    roles. Gate: a second tenant from another vertical.

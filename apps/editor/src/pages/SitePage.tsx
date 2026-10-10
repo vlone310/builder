@@ -5,6 +5,7 @@ import { useApi } from "../lib/session";
 import { Button, Dialog, Input, Label, Select } from "../ui";
 import { AppHeader } from "./AppHeader";
 import { useAsync } from "./useAsync";
+import { WebhooksPanel } from "./WebhooksPanel";
 
 export function SitePage({ siteId }: { siteId: string }) {
   const { api, session } = useApi();
@@ -88,6 +89,9 @@ export function SitePage({ siteId }: { siteId: string }) {
               ))}
               {data.data.pages.length === 0 && <li className="p-4 text-muted">No pages yet.</li>}
             </ul>
+            {(session.role === "admin" || session.role === "developer") && (
+              <WebhooksPanel api={api} siteId={siteId} />
+            )}
           </>
         )}
       </main>

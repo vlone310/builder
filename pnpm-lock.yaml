@@ -118,6 +118,9 @@ importers:
 
   e2e:
     devDependencies:
+      '@builder/core':
+        specifier: workspace:*
+        version: link:../packages/core
       '@builder/db':
         specifier: workspace:*
         version: link:../packages/db
@@ -184,6 +187,9 @@ importers:
         specifier: 6.2.12
         version: 6.2.12
     devDependencies:
+      '@types/react':
+        specifier: 19.3.0
+        version: 19.3.0
       next:
         specifier: 16.4.0
         version: 16.4.0(@playwright/test@1.64.0)(@types/node@22.20.5)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -281,6 +287,40 @@ importers:
         version: 5.0.3(@types/node@22.20.5)(jsdom@30.1.2)(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
 
   services/delivery-api:
+    dependencies:
+      '@builder/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@builder/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@hono/node-server':
+        specifier: 2.1.4
+        version: 2.1.4(hono@4.13.13)
+      drizzle-orm:
+        specifier: 0.45.4
+        version: 0.45.4(postgres@3.4.9)
+      hono:
+        specifier: 4.13.13
+        version: 4.13.13
+    devDependencies:
+      '@types/node':
+        specifier: 22.20.5
+        version: 22.20.5
+      tsup:
+        specifier: 8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.29)(tsx@4.23.15)(typescript@5.9.3)
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.3
+        version: 5.0.3(@types/node@22.20.5)(jsdom@30.1.2)(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+
+  services/worker:
     dependencies:
       '@builder/core':
         specifier: workspace:*

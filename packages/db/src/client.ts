@@ -41,7 +41,18 @@ function randomToken(length: number): string {
   return out;
 }
 
-export type IdPrefix = "org" | "st" | "env" | "pg" | "rev" | "cm" | "ast" | "key" | "wh";
+export type IdPrefix =
+  | "org"
+  | "st"
+  | "env"
+  | "pg"
+  | "rev"
+  | "cm"
+  | "ast"
+  | "key"
+  | "wh"
+  | "job"
+  | "pvw";
 
 /** Prefixed random id, e.g. "pg_3k9x...". */
 export function newId(prefix: IdPrefix): string {

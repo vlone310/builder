@@ -40,6 +40,31 @@ export interface PageSummary {
   latestRevisionId?: string | null;
 }
 
+export interface PreviewLink {
+  id: string;
+  revisionId: string;
+  expiresAt: string;
+  url: string | null;
+  token: string;
+}
+
+export interface Webhook {
+  id: string;
+  url: string;
+  events: string[];
+  createdAt: string;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  status: "pending" | "succeeded" | "failed";
+  attempts: number;
+  lastStatusCode: number | null;
+  lastError: string | null;
+  createdAt: string;
+  payload: { type?: string; page?: { slug?: string | null; name?: string | null } };
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -147,6 +172,17 @@ export function createApi(token: string) {
     unlock: (pageId: string) => call<void>("DELETE", `/v1/pages/${pageId}/lock`),
     publish: (pageId: string, revisionId: string) =>
       call<PageSummary>("POST", `/v1/pages/${pageId}/publish`, { revisionId }),
+    createPreviewLink: (
+      pageId: string,
+      input: { revisionId?: string; envId?: string; expiresInHours?: number },
+    ) => call<PreviewLink>("POST", `/v1/pages/${pageId}/preview-links`, input),
+    revokePreviewLink: (linkId: string) => call<void>("POST", `/v1/preview-links/${linkId}/revoke`),
+    webhooks: (siteId: string) => call<{ items: Webhook[] }>("GET", `/v1/sites/${siteId}/webhooks`),
+    createWebhook: (siteId: string, url: string) =>
+      call<Webhook & { secret: string }>("POST", `/v1/sites/${siteId}/webhooks`, { url }),
+    deleteWebhook: (webhookId: string) => call<void>("DELETE", `/v1/webhooks/${webhookId}`),
+    webhookDeliveries: (webhookId: string) =>
+      call<{ items: WebhookDelivery[] }>("GET", `/v1/webhooks/${webhookId}/deliveries`),
     editToken: (siteId: string, envId: string) =>
       call<{ token: string; expiresAt: string; environment: Environment }>(
         "POST",

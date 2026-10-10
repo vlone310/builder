@@ -7,5 +7,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   target: "es2022",
-  external: ["next", "@builder/core"],
+  external: ["next", "react", "@builder/core"],
 });

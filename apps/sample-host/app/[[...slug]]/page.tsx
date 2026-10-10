@@ -1,11 +1,13 @@
 import { PageRenderer } from "@builder/react";
 import type { Metadata } from "next";
+import { draftMode } from "next/headers";
 import { notFound } from "next/navigation";
 import { dataServices } from "@/builder/data";
 import { registry } from "@/builder/registry";
 import { fetchPage, locale } from "@/lib/builder";
 
-export const revalidate = 60;
+// A safety net only: publishing revalidates pages on demand through the webhook.
+export const revalidate = 3600;
 
 // No pages at build time; each is rendered on first request, then cached (ISR).
 export async function generateStaticParams() {
@@ -28,5 +30,18 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function Page({ params }: Props) {
   const page = await fetchPage((await params).slug);
   if (!page) notFound();
-  return <PageRenderer page={page} registry={registry} ctx={{ data: dataServices, locale }} />;
+  const previewing = "preview" in page;
+  return (
+    <>
+      {previewing && (await draftMode()).isEnabled && (
+        <div className="preview-bar" role="status">
+          Previewing an unpublished draft.{" "}
+          <a href={`/api/builder/preview?exit=1&slug=${encodeURIComponent(page.page.slug ?? "/")}`}>
+            Exit preview
+          </a>
+        </div>
+      )}
+      <PageRenderer page={page} registry={registry} ctx={{ data: dataServices, locale }} />
+    </>
+  );
 }

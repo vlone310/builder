@@ -1,12 +1,15 @@
 import { CURRENT_SCHEMA_VERSION, type PageDocument, richTextFromString } from "@builder/core";
 import { eq } from "drizzle-orm";
 import { type Db, hashApiKey, newId, withOrg } from "./client";
-import { apiKeys, environments, orgs, pages, revisions, sites } from "./schema";
+import { apiKeys, environments, orgs, pages, revisions, sites, webhooks } from "./schema";
 
 export const DEMO_ORG_ID = "org_demo";
 export const DEMO_SITE_ID = "st_demo";
 /** Only for local development; never use a fixed key anywhere else. */
 export const DEMO_DELIVERY_KEY = "bk_dlv_local_dev_only_000000000000";
+/** The demo site's publish webhook secret; the sample host's .env.example uses it. */
+export const DEMO_WEBHOOK_SECRET = "whsec_local_dev_only_00000000000000";
+export const DEMO_WEBHOOK_URL = "http://localhost:3000/api/builder/revalidate";
 
 type Root = PageDocument["root"];
 
@@ -108,6 +111,14 @@ export async function seedDemo(db: Db): Promise<{ deliveryKey: string }> {
       name: "dev",
       hostUrl: "http://localhost:3000",
       allowedOrigin: "http://localhost:3000",
+    });
+    await tx.insert(webhooks).values({
+      id: newId("wh"),
+      orgId: DEMO_ORG_ID,
+      siteId: DEMO_SITE_ID,
+      url: DEMO_WEBHOOK_URL,
+      secret: DEMO_WEBHOOK_SECRET,
+      events: ["page.published", "page.unpublished"],
     });
     await tx.insert(apiKeys).values({
       id: newId("key"),

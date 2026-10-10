@@ -62,6 +62,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo run build
+      - run: pnpm --filter @builder/db migrate
+        env:
+          DATABASE_URL: postgres://builder:builder@localhost:5432/builder_e2e
       - run: pnpm --filter @builder/e2e exec playwright install --with-deps chromium
       - run: pnpm e2e
       - uses: actions/upload-artifact@v4

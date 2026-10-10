@@ -4,6 +4,7 @@ export * from "./document";
 export * from "./fields";
 export * from "./patch";
 export * from "./protocol";
+export * from "./publishing";
 export * from "./registry";
 export * from "./rich-text";
 export * from "./tree";
