@@ -37,10 +37,16 @@ export async function canvasOrigin(page: Page) {
   return box;
 }
 
-/** Puts the demo org back to its seeded state so each test starts clean. */
+/**
+ * Puts the demo org back to its seeded state so each test starts clean, then
+ * tells the host to drop its cached pages, as a publish would.
+ */
 export async function reseed() {
   const { createDb } = await import("@builder/db");
-  const { seedDemo } = await import("@builder/db/seed");
+  const { DEMO_SITE_ID, DEMO_WEBHOOK_SECRET, DEMO_WEBHOOK_URL, seedDemo } = await import(
+    "@builder/db/seed"
+  );
+  const { signWebhook, siteCacheTag } = await import("@builder/core");
   const { db, close } = createDb(
     process.env.E2E_DATABASE_URL ?? "postgres://builder:builder@localhost:5432/builder_e2e",
   );
@@ -49,4 +55,19 @@ export async function reseed() {
   } finally {
     await close();
   }
+  const body = JSON.stringify({
+    id: `reseed-${Date.now()}`,
+    type: "page.published",
+    tags: [siteCacheTag(DEMO_SITE_ID)],
+  });
+  const response = await fetch(DEMO_WEBHOOK_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "builder-signature": await signWebhook(DEMO_WEBHOOK_SECRET, body),
+    },
+    body,
+  }).catch(() => null);
+  // Before the host is up (global setup) there is nothing cached to drop.
+  if (response && !response.ok) throw new Error(`Host revalidate failed: ${response.status}`);
 }

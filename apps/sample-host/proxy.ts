@@ -1,11 +1,14 @@
-import { rewriteEditRequest } from "@builder/next";
+import { builderProxy } from "@builder/next";
 import type { NextRequest } from "next/server";
 
 export function proxy(request: NextRequest) {
-  return rewriteEditRequest(request);
+  return builderProxy(request);
 }
 
-// Runs only for requests carrying ?builder.edit=<token>; live traffic skips it.
+// Runs only for edit and preview links; live traffic skips the proxy.
 export const config = {
-  matcher: [{ source: "/:path*", has: [{ type: "query", key: "builder.edit" }] }],
+  matcher: [
+    { source: "/:path*", has: [{ type: "query", key: "builder.edit" }] },
+    { source: "/:path*", has: [{ type: "query", key: "builder.preview" }] },
+  ],
 };

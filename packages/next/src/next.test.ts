@@ -1,10 +1,12 @@
-import { createRegistry, defineComponent } from "@builder/core";
+import { createRegistry, defineComponent, signWebhook } from "@builder/core";
 import { createLocalJWKSet, exportJWK, generateKeyPair, type JWTPayload, SignJWT } from "jose";
 import { NextRequest } from "next/server.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  builderProxy,
   createEditHandlers,
+  createRevalidateHandler,
   EDIT_TOKEN_AUDIENCE,
   rewriteEditRequest,
   verifyEditToken,
@@ -168,6 +170,74 @@ describe("rewriteEditRequest", () => {
   it("passes other requests through", () => {
     expect(
       rewriteEditRequest(new NextRequest("http://host.test/a")).headers.get("x-middleware-rewrite"),
+    ).toBeNull();
+  });
+});
+
+describe("createRevalidateHandler", () => {
+  const body = JSON.stringify({
+    id: "job_1",
+    type: "page.published",
+    tags: ["builder:page:pg_1", "builder:slug:st_1:en:/a"],
+  });
+  const post = async (
+    handler: ReturnType<typeof createRevalidateHandler>,
+    headers: Record<string, string>,
+    text = body,
+  ) =>
+    handler.POST(
+      new Request("http://host.test/api/builder/revalidate", {
+        method: "POST",
+        headers,
+        body: text,
+      }),
+    );
+
+  it("revalidates the payload's tags when the signature is valid", async () => {
+    const revalidated: string[] = [];
+    const handler = createRevalidateHandler({
+      secret: ["whsec_old", "whsec_new"],
+      revalidate: (tag) => void revalidated.push(tag),
+    });
+    const response = await post(handler, {
+      "builder-signature": await signWebhook("whsec_new", body),
+    });
+    expect(response.status).toBe(200);
+    expect(revalidated).toEqual(["builder:page:pg_1", "builder:slug:st_1:en:/a"]);
+  });
+
+  it("rejects bad, stale and missing signatures without revalidating", async () => {
+    const revalidated: string[] = [];
+    const handler = createRevalidateHandler({
+      secret: "whsec_new",
+      revalidate: (tag) => void revalidated.push(tag),
+    });
+    expect((await post(handler, {})).status).toBe(401);
+    expect(
+      (await post(handler, { "builder-signature": await signWebhook("whsec_other", body) })).status,
+    ).toBe(401);
+    const stale = await signWebhook("whsec_new", body, Math.floor(Date.now() / 1000) - 3600);
+    expect((await post(handler, { "builder-signature": stale })).status).toBe(401);
+    expect(revalidated).toEqual([]);
+  });
+});
+
+describe("builderProxy", () => {
+  it("redirects preview links to the preview handler", () => {
+    const response = builderProxy(
+      new NextRequest("http://host.test/promo?builder.preview=bk_pvw_1"),
+    );
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(
+      "http://host.test/api/builder/preview?token=bk_pvw_1",
+    );
+  });
+
+  it("still rewrites edit links and ignores everything else", () => {
+    const edit = builderProxy(new NextRequest("http://host.test/a?builder.edit=tok"));
+    expect(new URL(edit.headers.get("x-middleware-rewrite") ?? "").pathname).toBe("/builder-edit");
+    expect(
+      builderProxy(new NextRequest("http://host.test/a")).headers.get("x-middleware-rewrite"),
     ).toBeNull();
   });
 });

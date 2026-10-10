@@ -1,5 +1,11 @@
 export { createEditHandlers, type EditHandlerConfig, type OptionSource } from "./edit-handlers";
-export { EDIT_PARAM, editRouteHeaders, rewriteEditRequest } from "./edit-route";
+export {
+  builderProxy,
+  EDIT_PARAM,
+  editRouteHeaders,
+  PREVIEW_PARAM,
+  rewriteEditRequest,
+} from "./edit-route";
 export {
   EDIT_TOKEN_AUDIENCE,
   type EditSession,
@@ -7,3 +13,11 @@ export {
   EditTokenError,
   verifyEditToken,
 } from "./edit-token";
+export {
+  type BuilderPages,
+  type BuilderPagesConfig,
+  createBuilderPages,
+  PREVIEW_COOKIE,
+} from "./pages";
+export { createPreviewHandler, type PreviewHandlerConfig } from "./preview";
+export { createRevalidateHandler, type RevalidateHandlerConfig } from "./revalidate";

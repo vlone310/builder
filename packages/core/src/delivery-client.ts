@@ -3,7 +3,9 @@ import { migrateDocument, normalizeSlug, type PageDocument } from "./document";
 export interface DeliveryClientOptions {
   /** Delivery API origin, e.g. https://delivery.example.com */
   baseUrl: string;
-  /** Site delivery key (or a preview key to read drafts). */
+  /** The site the delivery key belongs to; part of every URL, so CDN caches never mix sites. */
+  siteId: string;
+  /** The site's delivery key. */
   deliveryKey: string;
   /** Override for tests or runtimes without a global fetch. */
   fetch?: typeof fetch;
@@ -24,6 +26,12 @@ export interface DeliveryClient {
     query: { name: string; locale: string },
     init?: DeliveryRequestInit,
   ): Promise<PageDocument | null>;
+  /** The draft revision a preview link points at; null when the link is invalid or expired. */
+  getPreview(token: string, init?: DeliveryRequestInit): Promise<PreviewDocument | null>;
+}
+
+export interface PreviewDocument extends PageDocument {
+  preview: { revisionId: string; expiresAt: string };
 }
 
 export class DeliveryError extends Error {
@@ -38,7 +46,7 @@ export class DeliveryError extends Error {
 
 export function createDeliveryClient(options: DeliveryClientOptions): DeliveryClient {
   const doFetch = options.fetch ?? globalThis.fetch;
-  const baseUrl = options.baseUrl.replace(/\/+$/, "");
+  const baseUrl = `${options.baseUrl.replace(/\/+$/, "")}/v1/sites/${encodeURIComponent(options.siteId)}`;
 
   async function get(path: string, params: Record<string, string>, init?: DeliveryRequestInit) {
     const url = `${baseUrl}${path}?${new URLSearchParams(params).toString()}`;
@@ -58,9 +66,12 @@ export function createDeliveryClient(options: DeliveryClientOptions): DeliveryCl
   }
 
   return {
-    getPage: ({ slug, locale }, init) =>
-      get("/v1/pages", { slug: normalizeSlug(slug), locale }, init),
+    getPage: ({ slug, locale }, init) => get("/pages", { slug: normalizeSlug(slug), locale }, init),
     getRegion: ({ name, locale }, init) =>
-      get(`/v1/regions/${encodeURIComponent(name)}`, { locale }, init),
+      get(`/regions/${encodeURIComponent(name)}`, { locale }, init),
+    getPreview: async (token, init) => {
+      const document = await get("/preview", { token }, { cache: "no-store", ...init });
+      return document as PreviewDocument | null;
+    },
   };
 }

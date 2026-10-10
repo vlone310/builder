@@ -1,9 +1,16 @@
-import { migrateDocument, normalizeSlug, type PageDocument } from "@builder/core";
+import {
+  migrateDocument,
+  normalizeSlug,
+  type PageDocument,
+  pageCacheTags,
+  siteCacheTag,
+} from "@builder/core";
 import {
   type Db,
   pages,
   type ResolvedApiKey,
   resolveApiKey,
+  resolvePreviewLink,
   revisions,
   withOrg,
 } from "@builder/db";
@@ -26,50 +33,86 @@ export function createDeliveryApp({ db, sMaxAge = 300 }: DeliveryAppOptions) {
 
   app.get("/health", (c) => c.json({ ok: true }));
 
-  app.use("/v1/*", async (c, next) => {
+  // The site is part of every URL, so a CDN caching by URL never mixes sites up.
+  app.use("/v1/sites/:siteId/*", async (c, next) => {
     const token = /^Bearer (.+)$/.exec(c.req.header("authorization") ?? "")?.[1];
     const apiKey = token ? await resolveApiKey(db, token) : null;
     if (apiKey?.kind !== "delivery") {
       throw new HTTPException(401, { message: "A valid delivery key is required" });
     }
+    if (apiKey.siteId !== c.req.param("siteId")) {
+      throw new HTTPException(404, { message: "No such site for this key" });
+    }
     c.set("apiKey", apiKey);
     await next();
   });
 
-  app.get("/v1/pages", async (c) => {
+  app.get("/v1/sites/:siteId/pages", async (c) => {
     const locale = requireLocale(c.req.query("locale"));
     const slug = normalizeSlug(c.req.query("slug"));
     const apiKey = c.get("apiKey");
     const document = await findPublished(db, apiKey, { kind: "page", locale, slug });
-    return respond(c, document, apiKey.siteId);
+    const tags = pageCacheTags({ id: "", siteId: apiKey.siteId, kind: "page", locale, slug });
+    return respond(c, document, apiKey.siteId, tags[1] as string);
   });
 
-  app.get("/v1/regions/:name", async (c) => {
+  app.get("/v1/sites/:siteId/regions/:name", async (c) => {
     const locale = requireLocale(c.req.query("locale"));
     const apiKey = c.get("apiKey");
-    const document = await findPublished(db, apiKey, {
-      kind: "region",
-      locale,
-      name: c.req.param("name"),
+    const name = c.req.param("name");
+    const document = await findPublished(db, apiKey, { kind: "region", locale, name });
+    const tags = pageCacheTags({ id: "", siteId: apiKey.siteId, kind: "region", locale, name });
+    return respond(c, document, apiKey.siteId, tags[1] as string);
+  });
+
+  /** One draft revision, by preview link token. Never cached. */
+  app.get("/v1/sites/:siteId/preview", async (c) => {
+    const apiKey = c.get("apiKey");
+    c.header("Cache-Control", "private, no-store");
+    const token = c.req.query("token") ?? "";
+    const link = token ? await resolvePreviewLink(db, token) : null;
+    // A link for another site is as good as no link: the key decides what is readable.
+    if (!link || link.siteId !== apiKey.siteId) {
+      return c.json(
+        { error: { code: "not_found", message: "Preview link is invalid or expired" } },
+        404,
+      );
+    }
+    const found = await withOrg(db, link.orgId, async (tx) => {
+      const rows = await tx
+        .select({ page: pages, tree: revisions.tree, revisionId: revisions.id })
+        .from(revisions)
+        .innerJoin(pages, eq(pages.id, revisions.pageId))
+        .where(and(eq(revisions.id, link.revisionId), eq(pages.id, link.pageId)))
+        .limit(1);
+      const row = rows[0];
+      return row ? { document: toDocument(row.page, row.tree), revisionId: row.revisionId } : null;
     });
-    return respond(c, document, apiKey.siteId);
+    if (!found) return c.json({ error: { code: "not_found", message: "Revision is gone" } }, 404);
+    return c.json({
+      ...found.document,
+      preview: { revisionId: found.revisionId, expiresAt: link.expiresAt },
+    });
   });
 
   function respond(
     c: Context<Env>,
     found: { document: PageDocument; revisionId: string } | null,
     siteId: string,
+    addressTag: string,
   ) {
     c.header("Vary", "Authorization");
     if (!found) {
+      // Tagged by address, so publishing a page here purges the cached 404.
       c.header("Cache-Control", "public, max-age=0, s-maxage=60");
+      c.header("Cache-Tag", [addressTag, siteCacheTag(siteId)].join(","));
       return c.json({ error: { code: "not_found", message: "No published content" } }, 404);
     }
     const etag = `"${found.revisionId}"`;
     c.header("ETag", etag);
     c.header("Cache-Control", `public, max-age=0, s-maxage=${sMaxAge}, stale-while-revalidate=60`);
     // Surrogate keys let the platform purge one page on publish.
-    c.header("Cache-Tag", `site:${siteId},page:${found.document.page.id}`);
+    c.header("Cache-Tag", [...pageCacheTags(found.document.page), siteCacheTag(siteId)].join(","));
     if (c.req.header("if-none-match") === etag) return c.body(null, 304);
     return c.json(found.document);
   }
@@ -120,22 +163,25 @@ async function findPublished(
       .limit(1);
     const row = rows[0];
     if (!row) return null;
-    const stored = migrateDocument(row.tree);
-    // Page meta comes from the pages row so renames apply without republishing.
-    const document: PageDocument = {
-      ...stored,
-      page: {
-        id: row.page.id,
-        siteId: row.page.siteId,
-        kind: row.page.kind,
-        locale: row.page.locale,
-        ...(row.page.slug !== null ? { slug: row.page.slug } : {}),
-        ...(row.page.name !== null ? { name: row.page.name } : {}),
-        ...(stored.page.seo ? { seo: stored.page.seo } : {}),
-      },
-    };
-    return { document, revisionId: row.revisionId };
+    return { document: toDocument(row.page, row.tree), revisionId: row.revisionId };
   });
+}
+
+/** Page meta comes from the pages row, so renames apply without republishing. */
+function toDocument(page: typeof pages.$inferSelect, tree: unknown): PageDocument {
+  const stored = migrateDocument(tree);
+  return {
+    ...stored,
+    page: {
+      id: page.id,
+      siteId: page.siteId,
+      kind: page.kind,
+      locale: page.locale,
+      ...(page.slug !== null ? { slug: page.slug } : {}),
+      ...(page.name !== null ? { name: page.name } : {}),
+      ...(stored.page.seo ? { seo: stored.page.seo } : {}),
+    },
+  };
 }
 
 function codeFor(status: number): string {

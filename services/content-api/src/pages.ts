@@ -3,11 +3,21 @@ import {
   migrateDocument,
   normalizeSlug,
   type PageDocument,
+  pageCacheTags,
   pageNodeSchema,
   pageSeoSchema,
   validatePage,
 } from "@builder/core";
-import { type Db, newId, pageKinds, pages, revisions, type Tx, withOrg } from "@builder/db";
+import {
+  type Db,
+  enqueuePageEvent,
+  newId,
+  pageKinds,
+  pages,
+  revisions,
+  type Tx,
+  withOrg,
+} from "@builder/db";
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -96,6 +106,17 @@ function buildDocument(page: PageRow, content: z.output<typeof contentSchema>): 
     throw new ApiError(422, "invalid_document", "Page document is invalid", result.issues);
   }
   return document;
+}
+
+function taggable(page: PageRow) {
+  return {
+    id: page.id,
+    siteId: page.siteId,
+    kind: page.kind,
+    locale: page.locale,
+    slug: page.slug,
+    name: page.name,
+  };
 }
 
 async function lockPage(tx: Tx, pageId: string): Promise<PageRow> {
@@ -229,7 +250,18 @@ export function pageRoutes(db: Db) {
           })
           .where(eq(pages.id, page.id))
           .returning();
-        return updated as PageRow;
+        const next = updated as PageRow;
+        if (page.publishedRevisionId && next.slug !== page.slug) {
+          // The live page moved: refresh the new address and drop the old one.
+          await enqueuePageEvent(tx, {
+            orgId,
+            event: "page.published",
+            page: taggable(next),
+            revisionId: page.publishedRevisionId,
+            extraTags: pageCacheTags(taggable(page)),
+          });
+        }
+        return next;
       });
       return c.json(pageView(page));
     } catch (error) {
@@ -243,6 +275,14 @@ export function pageRoutes(db: Db) {
     await withOrg(db, orgId, async (tx) => {
       const page = await lockPage(tx, c.req.param("pageId"));
       assertNotLockedByOther(page, userId);
+      if (page.publishedRevisionId) {
+        await enqueuePageEvent(tx, {
+          orgId,
+          event: "page.unpublished",
+          page: taggable(page),
+          revisionId: null,
+        });
+      }
       await tx.delete(pages).where(eq(pages.id, page.id));
     });
     return c.body(null, 204);
@@ -390,7 +430,13 @@ export function pageRoutes(db: Db) {
         .set({ publishedRevisionId: revisionId, updatedAt: new Date() })
         .where(eq(pages.id, page.id))
         .returning();
-      // Phase 3: purge the CDN and send the signed publish webhook here.
+      // Same transaction: the webhook and CDN purge go out only if the publish commits.
+      await enqueuePageEvent(tx, {
+        orgId,
+        event: "page.published",
+        page: taggable(updated as PageRow),
+        revisionId,
+      });
       return updated as PageRow;
     });
     return c.json(pageView(page));
@@ -411,6 +457,14 @@ export function pageRoutes(db: Db) {
         .set({ publishedRevisionId: null, updatedAt: new Date() })
         .where(eq(pages.id, page.id))
         .returning();
+      if (page.publishedRevisionId) {
+        await enqueuePageEvent(tx, {
+          orgId,
+          event: "page.unpublished",
+          page: taggable(page),
+          revisionId: null,
+        });
+      }
       return updated as PageRow;
     });
     return c.json(pageView(page));

@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 /**
  * Runs the built apps the way a tenant would: Content and Delivery APIs, the
- * sample Next.js host and the editor, against E2E_DATABASE_URL (migrated and
+ * outbox worker, the sample Next.js host and the editor, against E2E_DATABASE_URL (migrated and
  * seeded in global setup). Build first: pnpm turbo run build.
  */
 const databaseUrl =
@@ -59,6 +59,20 @@ export default defineConfig({
         BUILDER_SITE_ID: "st_demo",
         BUILDER_ENV: "dev",
         BUILDER_EDITOR_ORIGIN: "http://localhost:5173",
+        BUILDER_WEBHOOK_SECRET: "whsec_local_dev_only_00000000000000",
+      },
+    },
+    {
+      command: "node dist/server.js",
+      cwd: "../services/worker",
+      url: "http://localhost:4002/health",
+      reuseExistingServer: !process.env.CI,
+      // The demo webhook targets the host on localhost.
+      env: {
+        DATABASE_URL: databaseUrl,
+        PORT: "4002",
+        WORKER_POLL_MS: "300",
+        WEBHOOK_ALLOW_PRIVATE: "1",
       },
     },
     {

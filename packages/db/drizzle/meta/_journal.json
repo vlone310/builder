@@ -15,6 +15,20 @@
       "when": 1791628213736,
       "tag": "0001_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791641785959,
+      "tag": "0002_publish_pipeline",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791641794883,
+      "tag": "0003_publish_pipeline_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -179,15 +179,81 @@ export const apiKeys = pgTable(
   (t) => [uniqueIndex("api_keys_hash_uq").on(t.hash)],
 );
 
-export const webhooks = pgTable("webhooks", {
-  id: text("id").primaryKey(),
-  orgId: orgId(),
-  siteId: siteId(),
-  url: text("url").notNull(),
-  secret: text("secret").notNull(),
-  events: text("events").array().notNull(),
-  createdAt: createdAt(),
-});
+export const webhookEvents = ["page.published", "page.unpublished"] as const;
+export type WebhookEvent = (typeof webhookEvents)[number];
+
+export const webhooks = pgTable(
+  "webhooks",
+  {
+    id: text("id").primaryKey(),
+    orgId: orgId(),
+    siteId: siteId(),
+    url: text("url").notNull(),
+    /** HMAC key for the signature header; shown once at creation. */
+    secret: text("secret").notNull(),
+    events: text("events").array().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("webhooks_site_idx").on(t.siteId)],
+);
+
+export const jobKinds = ["webhook", "cdn_purge"] as const;
+export type JobKind = (typeof jobKinds)[number];
+export const jobStatuses = ["pending", "succeeded", "failed"] as const;
+
+/**
+ * Outbox: publishing writes jobs in the same transaction, and the worker
+ * delivers them with retries. Rows double as the webhook delivery log.
+ */
+export const jobs = pgTable(
+  "jobs",
+  {
+    id: text("id").primaryKey(),
+    orgId: orgId(),
+    siteId: siteId(),
+    kind: text("kind", { enum: jobKinds }).notNull(),
+    webhookId: text("webhook_id").references(() => webhooks.id, { onDelete: "cascade" }),
+    payload: jsonb("payload").notNull(),
+    status: text("status", { enum: jobStatuses }).notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(8),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    lastError: text("last_error"),
+    lastStatusCode: integer("last_status_code"),
+    createdAt: createdAt(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("jobs_due_idx").on(t.status, t.nextAttemptAt),
+    index("jobs_webhook_idx").on(t.webhookId, t.createdAt),
+  ],
+);
+
+/** A share link that shows one draft revision; the plaintext token is shown once. */
+export const previewLinks = pgTable(
+  "preview_links",
+  {
+    id: text("id").primaryKey(),
+    orgId: orgId(),
+    siteId: siteId(),
+    pageId: text("page_id")
+      .notNull()
+      .references(() => pages.id, { onDelete: "cascade" }),
+    revisionId: text("revision_id")
+      .notNull()
+      .references(() => revisions.id, { onDelete: "cascade" }),
+    hash: text("hash").notNull(),
+    createdBy: text("created_by").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("preview_links_hash_uq").on(t.hash),
+    index("preview_links_page_idx").on(t.pageId),
+  ],
+);
 
 export const tenantTables = [
   "orgs",
@@ -200,4 +266,6 @@ export const tenantTables = [
   "assets",
   "api_keys",
   "webhooks",
+  "jobs",
+  "preview_links",
 ] as const;

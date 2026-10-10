@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/.env
+**/.env.local
+e2e/results
+.git

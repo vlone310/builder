@@ -2,6 +2,7 @@ import { ArrowLeft, Monitor, Redo2, Smartphone, Tablet, Undo2 } from "lucide-rea
 import { useState } from "react";
 import { useEditor, type Viewport } from "../store/editor";
 import { Button, cx } from "../ui";
+import { SharePreview } from "./SharePreview";
 
 const VIEWPORTS: Array<{ id: Viewport; label: string; icon: typeof Monitor }> = [
   { id: "desktop", label: "Desktop", icon: Monitor },
@@ -108,6 +109,7 @@ export function Toolbar() {
       >
         {SAVE_LABEL[save.status]}
       </span>
+      <SharePreview />
       <Button
         variant="primary"
         onClick={publish}

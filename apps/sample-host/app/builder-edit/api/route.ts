@@ -5,12 +5,18 @@ import { registry } from "@/builder/registry";
 
 export const dynamic = "force-dynamic";
 
-export const { POST } = createEditHandlers({
-  ...builderConfig(),
-  registry,
-  ctx: () => ({ data: dataServices, locale: process.env.BUILDER_LOCALE ?? "en" }),
-  options: {
-    leagues: ({ query }) =>
-      LEAGUES.filter((league) => league.label.toLowerCase().includes(query.toLowerCase())),
-  },
-});
+// Created on first request, so `next build` needs no secrets.
+let handlers: ReturnType<typeof createEditHandlers> | undefined;
+
+export function POST(request: Request) {
+  handlers ??= createEditHandlers({
+    ...builderConfig(),
+    registry,
+    ctx: () => ({ data: dataServices, locale: process.env.BUILDER_LOCALE ?? "en" }),
+    options: {
+      leagues: ({ query }) =>
+        LEAGUES.filter((league) => league.label.toLowerCase().includes(query.toLowerCase())),
+    },
+  });
+  return handlers.POST(request);
+}

@@ -7,6 +7,7 @@ import { devLoginRoute } from "./dev-login";
 import { type EditTokenSigner, editTokenRoutes, jwksRoute } from "./edit-tokens";
 import { ApiError, type AppEnv } from "./http";
 import { pageRoutes } from "./pages";
+import { publishingRoutes } from "./publishing";
 import { siteRoutes } from "./sites";
 
 export interface ContentAppOptions {
@@ -48,6 +49,7 @@ export function createContentApp({
   app.route("/v1", siteRoutes(db));
   app.route("/v1", pageRoutes(db));
   app.route("/v1", editTokenRoutes(db, editTokens));
+  app.route("/v1", publishingRoutes(db));
 
   app.notFound((c) => c.json({ error: { code: "not_found", message: "Route not found" } }, 404));
   app.onError((error, c) => {

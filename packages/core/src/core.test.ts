@@ -272,6 +272,7 @@ describe("createDeliveryClient", () => {
     );
     const client = createDeliveryClient({
       baseUrl: "https://d.test/",
+      siteId: "st_1",
       deliveryKey: "dk_1",
       fetch: fetchMock,
     });
@@ -281,7 +282,7 @@ describe("createDeliveryClient", () => {
     );
     expect(result?.root.id).toBe("n1");
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, Record<string, unknown>];
-    expect(url).toBe("https://d.test/v1/pages?slug=%2Fsports&locale=en");
+    expect(url).toBe("https://d.test/v1/sites/st_1/pages?slug=%2Fsports&locale=en");
     expect(init).toMatchObject({
       next: { tags: ["page"] },
       headers: { authorization: "Bearer dk_1" },
@@ -291,12 +292,14 @@ describe("createDeliveryClient", () => {
   it("returns null on 404 and throws on other errors", async () => {
     const client404 = createDeliveryClient({
       baseUrl: "https://d.test",
+      siteId: "st_1",
       deliveryKey: "k",
       fetch: async () => new Response("", { status: 404 }),
     });
     expect(await client404.getPage({ slug: "/", locale: "en" })).toBeNull();
     const client500 = createDeliveryClient({
       baseUrl: "https://d.test",
+      siteId: "st_1",
       deliveryKey: "k",
       fetch: async () => new Response("", { status: 500 }),
     });
