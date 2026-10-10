@@ -19,6 +19,8 @@ export async function openPage(page: Page, slug: string): Promise<FrameLocator> 
   const canvas = page.frameLocator('iframe[title="Page canvas"]');
   await expect(page.getByTestId("palette-core/heading")).toBeVisible({ timeout: 30_000 });
   await expect(canvas.locator("[data-node-id]").first()).toBeVisible();
+  // Loader-backed nodes render a skeleton first; wait for their data so tests see the settled page.
+  await expect(canvas.locator("[data-builder-loading]")).toHaveCount(0);
   return canvas;
 }
 
