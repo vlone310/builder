@@ -10,7 +10,8 @@
     "start": "node --env-file-if-exists=.env dist/server.js",
     "token": "tsx --env-file-if-exists=.env src/dev-token.ts",
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "keys:generate": "tsx src/generate-key.ts"
   },
   "dependencies": {
     "@builder/core": "workspace:*",
@@ -18,7 +19,8 @@
     "@hono/node-server": "2.1.4",
     "drizzle-orm": "0.45.4",
     "hono": "4.13.13",
-    "zod": "4.6.5"
+    "zod": "4.6.5",
+    "jose": "6.2.12"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

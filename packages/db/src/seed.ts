@@ -107,7 +107,7 @@ export async function seedDemo(db: Db): Promise<{ deliveryKey: string }> {
       siteId: DEMO_SITE_ID,
       name: "dev",
       hostUrl: "http://localhost:3000",
-      allowedOrigin: "http://localhost:5173",
+      allowedOrigin: "http://localhost:3000",
     });
     await tx.insert(apiKeys).values({
       id: newId("key"),

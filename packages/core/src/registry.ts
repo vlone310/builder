@@ -108,12 +108,20 @@ export function prepareNode(
   const schema: PropsSchema = definition.props;
   const result = schema.safeParse(props);
   if (!result.success) {
+    const issues = result.error.issues.map((issue) => ({
+      path: issue.path,
+      message: issue.message,
+    }));
+    const summary = issues
+      .slice(0, 3)
+      .map((issue) => `${issue.path.map(String).join(".") || "props"}: ${issue.message}`)
+      .join("; ");
     return {
       ok: false,
       code: "invalid_props",
       definition,
-      message: `Invalid props for ${definition.id}`,
-      issues: result.error.issues.map((issue) => ({ path: issue.path, message: issue.message })),
+      message: `Invalid props for ${definition.id} (${summary})`,
+      issues,
     };
   }
   return { ok: true, definition, props: result.data };

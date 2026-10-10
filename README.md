@@ -11,13 +11,18 @@ This repo is the monorepo for every package in it.
 | Path | Package | What it is |
 | --- | --- | --- |
 | `packages/core` | `@builder/core` | `defineComponent`, `fields.*`, page document types and schemas, JSON Schema manifests, migrations, validation, Delivery API client. No framework dependency. |
-| `packages/react` | `@builder/react` | `<PageRenderer>`, `resolvePage` (loader runner), `<RichText>` |
+| `packages/core` (editing) | `@builder/core` | JSON Patch (RFC 6902) with inverses, tree operations, editor ↔ host protocol and messenger |
+| `packages/react` | `@builder/react` | `<PageRenderer>`, `resolvePage` (loader runner), `<RichText>`; `@builder/react/edit`: the edit bridge (`<EditCanvas>`) |
+| `packages/next` | `@builder/next` | Edit-token verification (ES256, JWKS), the edit endpoint for loaders and options, the edit-route proxy rewrite |
 | `packages/db` | `@builder/db` | Drizzle schema for the ten v1 tables, migrations with row-level security, tenancy helpers, demo seed |
 | `services/content-api` | `@builder/content-api` | Write API: sites, environments, API keys, pages, drafts, revisions, soft locks, publish |
 | `services/delivery-api` | `@builder/delivery-api` | Read-only API for published pages and regions, CDN cache headers |
-| `apps/sample-host` | `@builder/sample-host` | Next.js host app with sample `core/*` and `igaming/*` components |
+| `apps/sample-host` | `@builder/sample-host` | Next.js host app with sample `core/*` and `igaming/*` components and an edit route |
+| `apps/editor` | `@builder/editor` | The editor: page manager, canvas with overlays, palette, layers, props panel, drag-and-drop |
+| `e2e` | `@builder/e2e` | Playwright tests of the whole loop, including the drag-and-drop spike |
 
-Tooling: pnpm workspaces, Turborepo, TypeScript, Vitest, Biome, Hono, Drizzle, Postgres 16.
+Tooling: pnpm workspaces, Turborepo, TypeScript, Vitest, Playwright, Biome, Hono, Drizzle,
+Postgres 16. The editor uses Vite, Tailwind, Radix, Zustand and TipTap.
 
 ## Getting started
 
@@ -31,6 +36,7 @@ cp packages/db/.env.example packages/db/.env
 cp services/delivery-api/.env.example services/delivery-api/.env
 cp services/content-api/.env.example services/content-api/.env   # set CONTENT_API_JWT_SECRET
 cp apps/sample-host/.env.example apps/sample-host/.env.local
+cp apps/editor/.env.example apps/editor/.env
 
 pnpm db:migrate
 pnpm db:seed                              # demo org, site, delivery key and two published pages
@@ -38,11 +44,17 @@ pnpm build
 pnpm --filter @builder/delivery-api start # :4001
 pnpm --filter @builder/content-api start  # :4000
 pnpm --filter @builder/sample-host start  # :3000
+pnpm --filter @builder/editor preview     # :5173
 ```
 
 Open http://localhost:3000 and http://localhost:3000/sports/football. The football page includes
 an `acme/not-installed@1` node: it renders nothing on the live site and logs a warning, as the
 page model requires.
+
+Open the editor at http://localhost:5173 and sign in with org `org_demo` and any user id (the
+dev sign-in is on in `.env.example`; never enable it in production). Pick the demo site and a
+page: the host app loads in the canvas, and you can drag components in, edit props, undo, and
+publish.
 
 For development, `pnpm dev` runs all packages in watch mode.
 
@@ -89,6 +101,10 @@ Roles: `admin` manages sites; `admin` and `developer` manage environments and AP
 | GET | `/v1/revisions/:revisionId` | |
 | POST | `/v1/pages/:pageId/publish` | `{ revisionId }`; the previous published revision is archived |
 | POST | `/v1/pages/:pageId/unpublish` | |
+| POST | `/v1/edit-tokens` | `{ siteId, envId }` → a 10-minute ES256 token for that host environment |
+
+Outside `/v1`: `GET /.well-known/jwks.json` (public keys for edit tokens) and, only with
+`CONTENT_API_DEV_LOGIN=1`, `POST /auth/dev-login { orgId, userId, role }`.
 
 ## Delivery API (v1)
 
@@ -109,6 +125,35 @@ org is known through a `SECURITY DEFINER` function that matches only on the key 
 `packages/db/src/rls.test.ts` checks that every table has RLS on and that orgs cannot read or
 write each other's rows.
 
+## Editing (phase 2)
+
+The editor and the host app talk only through postMessage (protocol v1 in
+`packages/core/src/protocol.ts`), each pinned to the other's exact origin. The editor owns the
+document; the host owns rendering.
+
+1. The editor asks the Content API for an edit token and opens
+   `<host>/<slug>?builder.edit=<token>` in an iframe.
+2. The host's `proxy.ts` rewrites that request to its edit route (live traffic skips the proxy
+   entirely). The route verifies the token's ES256 signature against the Content API's JWKS,
+   and that it was issued for this site and environment, then loads the edit bridge.
+3. The bridge announces `ready` with its component manifests. The editor builds its palette
+   and props panels from them and sends `renderTree`.
+4. Each edit is a JSON Patch: the editor applies it locally, sends it to the host, keeps the
+   inverse for undo, and saves a draft after 800 ms of quiet. The host renders with the
+   tenant's own components and reports layout boxes once per animation frame.
+5. Loaders run on the host's server through its edit endpoint, cached by component type and
+   props, so moving a node never refetches its data.
+6. Drag-and-drop lives in the editor: an overlay takes the pointer, computes the drop target
+   from the layout boxes (honouring slot allow-lists and constraints), and sends one patch.
+
+To add edit mode to a Next.js host, see `apps/sample-host`: `proxy.ts`,
+`app/builder-edit/page.tsx`, `app/builder-edit/api/route.ts` and `builder/edit-canvas.tsx`, plus
+the `BUILDER_CONTENT_API_URL`, `BUILDER_SITE_ID`, `BUILDER_ENV` and `BUILDER_EDITOR_ORIGIN`
+settings. Components must be able to render in the browser for edit mode; loaders stay
+server-side.
+
+The drag-and-drop gate review is in [docs/phase-2-spike.md](docs/phase-2-spike.md).
+
 ## Decisions made while building phase 1
 
 - **Migration keys**: `migrations: { N: fn }` upgrades props *from* major N to N + 1.
@@ -122,6 +167,21 @@ write each other's rows.
   `pages` row on read, so renames apply without republishing.
 - **Draft saves** use optimistic concurrency (`baseRevisionId`) on top of the soft lock.
 
+## Decisions made while building phase 2
+
+- **Edit rendering is client-side**: the host renders the editor's document in the browser, and
+  loaders run on the host's server through the edit endpoint. Prop edits show without a round
+  trip; tenant components must be browser-compatible.
+- **Edit tokens** are ES256 JWTs (10 minutes, audience `builder-host`, claims for org, site and
+  environment). Hosts verify them locally against `/.well-known/jwks.json`; the editor sends
+  fresh ones with `init` every 5 minutes. Set `EDIT_TOKEN_PRIVATE_JWK` in production
+  (`pnpm --filter @builder/content-api keys:generate`); without it the key is ephemeral.
+- **Protocol additions**: `nodeHover` (host → editor) and `scrollBy` (editor → host); see the
+  spike report.
+- **The palette comes from the host's `ready` message** until the Registry exists (phase 4), so
+  the `manifestHash` check against the Registry is not wired yet.
+- **A new page** starts with the first container component the host offers as its root.
+
 ## Tests
 
 ```sh
@@ -133,11 +193,21 @@ TEST_DATABASE_URL=postgres://builder:builder@localhost:5432/builder_test pnpm te
 Database-backed tests (RLS, Content API, Delivery API) are skipped when `TEST_DATABASE_URL`
 is unset. CI runs everything against a Postgres service.
 
+End-to-end tests start all four apps from their builds and drive the editor in Chromium:
+
+```sh
+pnpm build
+E2E_DATABASE_URL=postgres://builder:builder@localhost:5432/builder_e2e pnpm e2e
+```
+
+They migrate and seed `E2E_DATABASE_URL` themselves. The spike's numbers land in
+`e2e/results/spike.json`.
+
 ## Roadmap
 
-1. **Foundations** (this): contract, page model, core and react packages, Content and Delivery
+1. **Foundations** (done): contract, page model, core and react packages, Content and Delivery
    APIs, sample host. Gate: the sample host renders a stored JSON page with SSR.
-2. **Editor MVP**: iframe canvas, protocol v1, overlays, props panel from JSON Schema, layers,
+2. **Editor MVP** (built; gate under review): iframe canvas, protocol v1, overlays, props panel from JSON Schema, layers,
    drag-and-drop. Gate: drag-and-drop spike review.
 3. **Publish**: preview links, signed webhooks, CDN purge, `@builder/next` with draft mode and
    tag revalidation. Gate: a first pilot tenant serves live pages.
