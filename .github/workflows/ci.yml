@@ -73,3 +73,62 @@ jobs:
           name: e2e-results
           path: e2e/results
           retention-days: 14
+
+  images:
+    # Builds each service image the way Railway does, runs migrations from it
+    # against a fresh database, starts it and waits for /health.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [content-api, delivery-api, worker]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: builder
+          POSTGRES_PASSWORD: builder
+          POSTGRES_DB: builder_images
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U builder -d builder_images"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://builder:builder@localhost:5432/builder_images
+      IMAGE: builder-${{ matrix.service }}:ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: SERVICE=${{ matrix.service }}
+          tags: ${{ env.IMAGE }}
+          load: true
+          push: false
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+      - name: Migrate from the image
+        run: docker run --rm --network host -e DATABASE_URL "$IMAGE" node dist/migrate.js
+      - name: Start the image and wait for /health
+        run: |
+          docker run -d --name service --network host -e DATABASE_URL -e PORT=4100 \
+            -e CONTENT_API_JWT_SECRET=ci-secret-that-is-at-least-32-characters-long "$IMAGE"
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:4100/health; then exit 0; fi
+            sleep 1
+          done
+          docker logs service
+          exit 1
+      - name: Build the standalone migrate target
+        if: matrix.service == 'content-api'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: migrate
+          push: false
+          cache-from: type=gha,scope=migrate
+          cache-to: type=gha,mode=max,scope=migrate

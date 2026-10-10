@@ -57,17 +57,20 @@ page model requires.
 Publishing from the editor reaches http://localhost:3000 within about a second: the worker
 sends the seeded demo webhook to the host, which revalidates the page.
 
-Open the editor at http://localhost:5173 and sign in with org `org_demo` and any user id (the
-dev sign-in is on in `.env.example`; never enable it in production). Pick the demo site and a
+Open the editor at http://localhost:5173 and use the development sign-in with org `org_demo` and
+any user id (it is on in `.env.example`; never enable it in production). Pick the demo site and a
 page: the host app loads in the canvas, and you can drag components in, edit props, undo, and
 publish.
+
+Real sign-in works locally too. Invite yourself with the dev login's token (`POST /v1/invites`,
+or the editor's Members page as an admin), open the invite link, and request an email link. Without
+`RESEND_API_KEY` the Content API prints the link to its log.
 
 For development, `pnpm dev` runs all packages in watch mode.
 
 ### Calling the Content API
 
-Until the auth service exists, get a session token from the dev script (signed with
-`CONTENT_API_JWT_SECRET`):
+For scripts, get a session token from the dev script (signed with `CONTENT_API_JWT_SECRET`):
 
 ```sh
 TOKEN=$(pnpm -s --filter @builder/content-api token --org org_demo --role editor --user me)
@@ -82,14 +85,21 @@ curl -X POST localhost:4000/v1/pages/<page id>/publish \
   -d '{"revisionId":"<revision id>"}'
 ```
 
-The host shows the page after its ISR window (60 s). Publish webhooks will make this immediate
-in phase 3.
+The worker delivers the publish webhook, so the host shows the page within about a second.
 
 ## Content API (v1)
 
-All routes need `Authorization: Bearer <session token>` with claims `sub`, `org`, `role`.
-Roles: `admin` manages sites; `admin` and `developer` manage environments and API keys;
-`admin`, `developer` and `editor` edit and publish; `viewer` reads.
+All routes need `Authorization: Bearer <session token>` with claims `sub`, `org`, `role`. The
+editor gets that token from sign-in (below). Every member can read; writes need a permission
+from the matrix in `packages/core/src/permissions.ts`:
+
+| Permission | Roles | Covers |
+| --- | --- | --- |
+| `content.edit` | admin, developer, editor | Pages, drafts, locks, preview links, edit tokens |
+| `content.publish` | admin, developer, editor | Publish and unpublish |
+| `site.configure` | admin, developer | Environments, API keys, webhooks |
+| `site.create` | admin | New sites |
+| `members.manage` | admin | Invites, roles, removing members |
 
 | Method | Route | Notes |
 | --- | --- | --- |
@@ -113,12 +123,37 @@ Roles: `admin` manages sites; `admin` and `developer` manage environments and AP
 | GET | `/v1/webhooks/:webhookId/deliveries` | The last 50 deliveries with status, attempts and errors |
 | GET, POST | `/v1/pages/:pageId/preview-links` | `{ revisionId?, envId?, expiresInHours? }` → a share URL with a token, returned once |
 | POST | `/v1/preview-links/:linkId/revoke` | |
+| GET | `/v1/members` | Members with email and name |
+| PATCH, DELETE | `/v1/members/:userId` | `{ role }`; the last admin can be neither demoted nor removed |
+| GET, POST | `/v1/invites` | `{ email, role }`; emails the link and returns it; replaces a live invite to the same address |
+| POST | `/v1/invites/:inviteId/revoke` | |
 
 Publishing, unpublishing, moving a published page's slug and deleting a published page each
 queue a signed webhook per endpoint and a CDN purge, in the same transaction.
 
 Outside `/v1`: `GET /.well-known/jwks.json` (public keys for edit tokens) and, only with
 `CONTENT_API_DEV_LOGIN=1`, `POST /auth/dev-login { orgId, userId, role }`.
+
+### Sign-in
+
+[Better Auth](https://better-auth.com) runs inside the Content API at `/auth/*` when
+`BETTER_AUTH_SECRET` is set. It owns identity (`users`, `auth_sessions`, `auth_accounts`,
+`auth_verifications`). Those tables carry no `org_id`, and `builder_app` cannot read them.
+Memberships and roles stay in our tables.
+
+1. An admin invites an email address with a role. Only invited addresses can create an account.
+2. The person opens the invite link (`<editor>/#/invite/<token>`) and signs in with an email link
+   (`POST /auth/sign-in/magic-link`), or Google when `GOOGLE_CLIENT_ID` and
+   `GOOGLE_CLIENT_SECRET` are set. Better Auth sets an HttpOnly cookie on the Content API's
+   domain.
+3. `POST /auth/invites/accept { token }` joins the org; the signed-in email must match.
+4. `GET /auth/orgs` lists the user's orgs; `POST /auth/token { orgId }` returns a 15-minute org
+   token, which the editor refreshes in the background. Role changes therefore apply within 15
+   minutes.
+
+The cookie routes accept writes only from `EDITOR_ORIGIN`. The editor and the Content API must
+be on the same site (for example `editor.<domain>` and `content.<domain>`) so the cookie is
+sent.
 
 ## Delivery API (v1)
 
@@ -142,7 +177,7 @@ Every table carries `org_id`. Services run tenant queries through `withOrg(db, o
 which opens a transaction, switches to the `builder_app` role and sets `app.org_id`; Postgres
 row-level security then limits every statement to that org. API keys are resolved before the
 org is known through a `SECURITY DEFINER` function that matches only on the key hash.
-`packages/db/src/rls.test.ts` checks that every table has RLS on and that orgs cannot read or
+`packages/db/src/rls.test.ts` checks that every tenant table has RLS on and that orgs cannot read or
 write each other's rows.
 
 ## Editing (phase 2)

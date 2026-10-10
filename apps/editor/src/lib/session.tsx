@@ -145,9 +145,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         return result.token;
       })
       .catch((error) => {
-        // The sign-in ended or the membership is gone: back to the login page.
-        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        if (error instanceof ApiError && error.status === 401) {
+          // The sign-in ended: back to the login page.
           signOutLocally();
+        } else if (error instanceof ApiError && error.status === 403) {
+          // Removed from this org: back to the org picker, still signed in.
+          update(null);
+          void refreshIdentity().catch(() => {});
         }
         throw error;
       })
@@ -155,7 +159,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         refreshing.current = null;
       });
     return refreshing.current;
-  }, [update, signOutLocally]);
+  }, [update, signOutLocally, refreshIdentity]);
 
   const orgKey = session ? `${session.org.id}:${session.userId}` : null;
   // One client per org and user: token refreshes must not reload the pages using it.

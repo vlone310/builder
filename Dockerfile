@@ -1,6 +1,8 @@
 # Platform services: content-api, delivery-api, worker. One image per service:
 #   docker build --build-arg SERVICE=content-api -t builder-content-api .
-# Migrations (run before deploying a new version):
+# Migrations (run before deploying a new version), from any service image:
+#   docker run -e DATABASE_URL=... builder-content-api node dist/migrate.js
+# or from the standalone target:
 #   docker build --target migrate -t builder-migrate . && docker run -e DATABASE_URL=... builder-migrate
 
 FROM node:22-slim AS base
@@ -26,5 +28,7 @@ WORKDIR /app
 COPY --from=build /out/package.json ./
 COPY --from=build /out/dist ./dist
 COPY --from=build /out/node_modules ./node_modules
+# dist/migrate.js reads the SQL migrations from ../drizzle.
+COPY --from=build /repo/packages/db/drizzle ./drizzle
 USER node
 CMD ["node", "dist/server.js"]

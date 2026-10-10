@@ -112,6 +112,13 @@ describe.skipIf(!url)("sign-in", () => {
     });
   });
 
+  it("has no dev login when it is off", async () => {
+    const response = await req("POST", "/auth/dev-login", {
+      body: { orgId, userId: "x", role: "admin" },
+    });
+    expect(response.status).toBe(404);
+  });
+
   it("sends no link to an uninvited address and creates no user", async () => {
     expect(await signIn(`nobody-${run}@example.com`)).toBeNull();
     const rows = await handle.db
