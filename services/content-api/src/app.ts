@@ -8,6 +8,7 @@ import { type EditTokenSigner, editTokenRoutes, jwksRoute } from "./edit-tokens"
 import { ApiError, type AppEnv } from "./http";
 import { pageRoutes } from "./pages";
 import { publishingRoutes } from "./publishing";
+import { createAuth, type SignInOptions, signInRoutes } from "./sign-in";
 import { siteRoutes } from "./sites";
 
 export interface ContentAppOptions {
@@ -18,6 +19,8 @@ export interface ContentAppOptions {
   corsOrigins?: string[];
   /** Mount the passwordless dev login. Never in production. */
   devLogin?: boolean;
+  /** Real sign-in (Better Auth) under /auth/*. */
+  signIn?: Omit<SignInOptions, "db" | "trustedOrigins">;
 }
 
 export function createContentApp({
@@ -26,6 +29,7 @@ export function createContentApp({
   editTokens,
   corsOrigins = [],
   devLogin = false,
+  signIn,
 }: ContentAppOptions) {
   const app = new Hono<AppEnv>();
 
@@ -36,6 +40,8 @@ export function createContentApp({
         origin: corsOrigins,
         allowHeaders: ["authorization", "content-type"],
         allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+        // The sign-in cookie rides along on /auth/* calls from the editor.
+        credentials: true,
         maxAge: 600,
       }),
     );
@@ -44,6 +50,12 @@ export function createContentApp({
   app.get("/health", (c) => c.json({ ok: true }));
   app.route("/", jwksRoute(editTokens));
   if (devLogin) app.route("/", devLoginRoute(db, jwtSecret));
+  if (signIn) {
+    const options: SignInOptions = { ...signIn, db, trustedOrigins: corsOrigins };
+    const auth = createAuth(options);
+    app.route("/", signInRoutes(auth, options, jwtSecret));
+    app.on(["GET", "POST"], "/auth/*", (c) => auth.handler(c.req.raw));
+  }
 
   app.use("/v1/*", authMiddleware(jwtSecret));
   app.route("/v1", siteRoutes(db));

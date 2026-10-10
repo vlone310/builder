@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
   bigint,
+  boolean,
   check,
   index,
   integer,
@@ -255,6 +256,102 @@ export const previewLinks = pgTable(
   ],
 );
 
+/** An invitation to join an org with a role; the plaintext token is emailed once. */
+export const invites = pgTable(
+  "invites",
+  {
+    id: text("id").primaryKey(),
+    orgId: orgId(),
+    /** Lower-cased; only a user signed in with this email can accept. */
+    email: text("email").notNull(),
+    role: text("role", { enum: roles }).notNull(),
+    hash: text("hash").notNull(),
+    invitedBy: text("invited_by").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    acceptedBy: text("accepted_by"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("invites_hash_uq").on(t.hash), index("invites_org_idx").on(t.orgId)],
+);
+
+/**
+ * Identity, owned by Better Auth in the Content API. A person is one user
+ * across orgs, so these tables carry no org_id and builder_app has no access;
+ * memberships tie users to orgs.
+ */
+const updatedAt = () => timestamp("updated_at", { withTimezone: true }).notNull().defaultNow();
+const userId = () =>
+  text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" });
+
+export const users = pgTable("users", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("email_verified").notNull().default(false),
+  image: text("image"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const authSessions = pgTable(
+  "auth_sessions",
+  {
+    id: text("id").primaryKey(),
+    token: text("token").notNull().unique(),
+    userId: userId(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("auth_sessions_user_idx").on(t.userId)],
+);
+
+export const authAccounts = pgTable(
+  "auth_accounts",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: userId(),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at", { withTimezone: true }),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("auth_accounts_user_idx").on(t.userId)],
+);
+
+export const authVerifications = pgTable(
+  "auth_verifications",
+  {
+    id: text("id").primaryKey(),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("auth_verifications_identifier_idx").on(t.identifier)],
+);
+
+export const identityTables = [
+  "users",
+  "auth_sessions",
+  "auth_accounts",
+  "auth_verifications",
+] as const;
+
 export const tenantTables = [
   "orgs",
   "memberships",
@@ -268,4 +365,5 @@ export const tenantTables = [
   "webhooks",
   "jobs",
   "preview_links",
+  "invites",
 ] as const;

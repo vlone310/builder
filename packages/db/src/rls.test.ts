@@ -3,13 +3,28 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createDb,
   type DbHandle,
+  emailInvited,
   generateApiKey,
+  generateInviteToken,
   newId,
+  orgMembers,
   resolveApiKey,
+  resolveInvite,
   runMigrations,
+  userMemberships,
   withOrg,
 } from "./index";
-import { apiKeys, orgs, pages, sites, tenantTables } from "./schema";
+import {
+  apiKeys,
+  identityTables,
+  invites,
+  memberships,
+  orgs,
+  pages,
+  sites,
+  tenantTables,
+  users,
+} from "./schema";
 
 const url = process.env.TEST_DATABASE_URL;
 
@@ -61,8 +76,19 @@ describe.skipIf(!url)("row-level security", () => {
       sql`SELECT relname, relrowsecurity FROM pg_class WHERE relkind = 'r' AND relnamespace = 'public'::regnamespace AND relname NOT LIKE '\\_\\_%'`,
     );
     const tables = rows.map((row) => row.relname).sort();
-    expect(tables).toEqual([...tenantTables].sort());
-    expect(rows.every((row) => row.relrowsecurity)).toBe(true);
+    expect(tables).toEqual([...tenantTables, ...identityTables].sort());
+    const tenant = new Set<string>(tenantTables);
+    expect(rows.filter((row) => tenant.has(row.relname)).every((row) => row.relrowsecurity)).toBe(
+      true,
+    );
+  });
+
+  it("keeps identity tables away from tenant queries", async () => {
+    for (const table of identityTables) {
+      await expect(
+        withOrg(handle.db, orgA, (tx) => tx.execute(sql.raw(`SELECT 1 FROM ${table} LIMIT 1`))),
+      ).rejects.toMatchObject({ cause: { message: expect.stringMatching(/permission denied/) } });
+    }
   });
 
   it("shows each org only its own rows", async () => {
@@ -95,5 +121,60 @@ describe.skipIf(!url)("row-level security", () => {
       kind: "delivery",
     });
     expect(await resolveApiKey(handle.db, "bk_dlv_wrong")).toBeNull();
+  });
+
+  describe("identity lookups", () => {
+    const userId = newId("usr");
+    const email = `${userId}@example.com`;
+    const token = generateInviteToken();
+
+    beforeAll(async () => {
+      await handle.db.insert(users).values({ id: userId, name: "Ada", email });
+      await withOrg(handle.db, orgA, async (tx) => {
+        await tx.insert(memberships).values({ orgId: orgA, userId, role: "editor" });
+        await tx.insert(invites).values({
+          id: newId("inv"),
+          orgId: orgA,
+          email: `new-${email}`,
+          role: "viewer",
+          hash: token.hash,
+          invitedBy: userId,
+          expiresAt: new Date(Date.now() + 60_000),
+        });
+      });
+    });
+
+    afterAll(async () => {
+      await handle.db.delete(users).where(sql`id = ${userId}`);
+    });
+
+    it("lists a user's orgs across orgs", async () => {
+      expect(await userMemberships(handle.db, userId)).toEqual([
+        { orgId: orgA, orgName: orgA, role: "editor" },
+      ]);
+      expect(await userMemberships(handle.db, "usr_nobody")).toEqual([]);
+    });
+
+    it("resolves live invites by token and gates sign-up by email", async () => {
+      expect(await resolveInvite(handle.db, token.plaintext)).toMatchObject({
+        orgId: orgA,
+        email: `new-${email}`,
+        role: "viewer",
+      });
+      expect(await resolveInvite(handle.db, "bk_inv_wrong")).toBeNull();
+      expect(await emailInvited(handle.db, `NEW-${email}`)).toBe(true);
+      expect(await emailInvited(handle.db, email)).toBe(false);
+      await withOrg(handle.db, orgA, (tx) =>
+        tx.update(invites).set({ revokedAt: new Date() }).where(sql`hash = ${token.hash}`),
+      );
+      expect(await resolveInvite(handle.db, token.plaintext)).toBeNull();
+      expect(await emailInvited(handle.db, `new-${email}`)).toBe(false);
+    });
+
+    it("joins members with their email for the current org only", async () => {
+      const a = await withOrg(handle.db, orgA, (tx) => orgMembers(tx));
+      expect(a).toMatchObject([{ userId, role: "editor", email, name: "Ada" }]);
+      expect(await withOrg(handle.db, orgB, (tx) => orgMembers(tx))).toEqual([]);
+    });
   });
 });
