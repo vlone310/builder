@@ -1,0 +1,28 @@
+{
+  "name": "@builder/delivery-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only, CDN-cached API for published pages and regions",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+    "build": "tsup",
+    "start": "node --env-file-if-exists=.env dist/server.js",
+    "typecheck": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@builder/core": "workspace:*",
+    "@builder/db": "workspace:*",
+    "@hono/node-server": "2.1.4",
+    "drizzle-orm": "0.45.4",
+    "hono": "4.13.13"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "tsup": "8.5.1",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "5.0.3"
+  }
+}
