@@ -53,8 +53,7 @@ export type IdPrefix =
   | "wh"
   | "job"
   | "pvw"
-  | "inv"
-  | "usr";
+  | "inv";
 
 /** Prefixed random id, e.g. "pg_3k9x...". */
 export function newId(prefix: IdPrefix): string {

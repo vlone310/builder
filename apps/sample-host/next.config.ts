@@ -1,17 +1,19 @@
+import { fileURLToPath } from "node:url";
 import { editRouteHeaders } from "@builder/next";
 import type { NextConfig } from "next";
 
-const editorOrigin = process.env.BUILDER_EDITOR_ORIGIN ?? "http://localhost:5173";
-
 const nextConfig: NextConfig = {
+  // A self-contained server for the container image (see Dockerfile).
+  output: "standalone",
+  outputFileTracingRoot: fileURLToPath(new URL("../..", import.meta.url)),
   async headers() {
     return [
       {
         source: "/:path*",
-        // Only the builder editor may frame this app.
-        headers: [
-          { key: "Content-Security-Policy", value: `frame-ancestors 'self' ${editorOrigin}` },
-        ],
+        // Nobody frames live pages. Edit requests get the editor's origin from the
+        // proxy at request time, so one image serves every environment.
+        missing: [{ type: "query", key: "builder.edit" }],
+        headers: [{ key: "Content-Security-Policy", value: "frame-ancestors 'self'" }],
       },
       { source: "/builder-edit/:path*", headers: editRouteHeaders },
       { source: "/builder-edit", headers: editRouteHeaders },

@@ -1,0 +1,62 @@
+{
+  "realm": "builder",
+  "displayName": "Builder",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "verifyEmail": true,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 28800,
+  "ssoSessionMaxLifespan": 36000,
+  "smtpServer": {
+    "host": "${BUILDER_SMTP_HOST:mailpit}",
+    "port": "${BUILDER_SMTP_PORT:1025}",
+    "from": "${BUILDER_SMTP_FROM:no-reply@builder.local}",
+    "fromDisplayName": "Builder",
+    "auth": "${BUILDER_SMTP_AUTH:false}",
+    "user": "${BUILDER_SMTP_USER:}",
+    "password": "${BUILDER_SMTP_PASSWORD:}",
+    "starttls": "${BUILDER_SMTP_STARTTLS:false}",
+    "ssl": "false"
+  },
+  "clients": [
+    {
+      "clientId": "builder-editor",
+      "name": "Builder editor",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "redirectUris": ["${BUILDER_EDITOR_URL:http://localhost:5173}/*"],
+      "webOrigins": ["${BUILDER_EDITOR_URL:http://localhost:5173}"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "${BUILDER_EDITOR_URL:http://localhost:5173}/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "builder-content-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "builder-content-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -14,6 +14,11 @@ export interface EditSession {
 export interface EditTokenConfig {
   /** Content API origin; the token issuer and the home of /.well-known/jwks.json. */
   contentApiUrl: string;
+  /**
+   * Where to fetch the Content API's keys when its public URL is not reachable
+   * from this server (inside a cluster or docker compose).
+   */
+  contentApiJwksUrl?: string | undefined;
   /** This host's site id and environment name; tokens for anything else are refused. */
   siteId: string;
   env: string;
@@ -30,14 +35,14 @@ export class EditTokenError extends Error {
 
 const keySets = new Map<string, JWTVerifyGetKey>();
 
-function keysFor(contentApiUrl: string): JWTVerifyGetKey {
-  let keys = keySets.get(contentApiUrl);
+function keysFor(jwksUrl: string): JWTVerifyGetKey {
+  let keys = keySets.get(jwksUrl);
   if (!keys) {
-    keys = createRemoteJWKSet(new URL("/.well-known/jwks.json", contentApiUrl), {
+    keys = createRemoteJWKSet(new URL(jwksUrl), {
       cacheMaxAge: 10 * 60 * 1000,
       cooldownDuration: 30 * 1000,
     });
-    keySets.set(contentApiUrl, keys);
+    keySets.set(jwksUrl, keys);
   }
   return keys;
 }
@@ -52,11 +57,19 @@ export async function verifyEditToken(
 ): Promise<EditSession> {
   let payload: Record<string, unknown>;
   try {
-    ({ payload } = await jwtVerify(token, config.keys ?? keysFor(config.contentApiUrl), {
-      issuer: config.contentApiUrl.replace(/\/+$/, ""),
-      audience: EDIT_TOKEN_AUDIENCE,
-      algorithms: ["ES256"],
-    }));
+    ({ payload } = await jwtVerify(
+      token,
+      config.keys ??
+        keysFor(
+          config.contentApiJwksUrl ||
+            new URL("/.well-known/jwks.json", config.contentApiUrl).toString(),
+        ),
+      {
+        issuer: config.contentApiUrl.replace(/\/+$/, ""),
+        audience: EDIT_TOKEN_AUDIENCE,
+        algorithms: ["ES256"],
+      },
+    ));
   } catch (error) {
     throw new EditTokenError(
       `Invalid edit token: ${error instanceof Error ? error.message : String(error)}`,

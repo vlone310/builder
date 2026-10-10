@@ -1,15 +1,48 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
+import { KEYCLOAK_URL } from "../playwright.config";
 import { lastEmailTo, signIn } from "./helpers";
 
 const CONTENT_API = "http://localhost:4000";
+const PASSWORD = "e2e-Password-1";
 
-test("an invited person signs in with an email link, joins the org and is signed out", async ({
-  page,
-  request,
-}) => {
-  const email = `pilot-${Date.now()}@example.com`;
+/** Creates a verified user in the builder realm through Keycloak's admin API. */
+async function keycloakUser(email: string) {
+  const login = await fetch(`${KEYCLOAK_URL}/realms/master/protocol/openid-connect/token`, {
+    method: "POST",
+    body: new URLSearchParams({
+      client_id: "admin-cli",
+      grant_type: "password",
+      username: "admin",
+      password: "admin",
+    }),
+  });
+  const { access_token } = (await login.json()) as { access_token: string };
+  const created = await fetch(`${KEYCLOAK_URL}/admin/realms/builder/users`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${access_token}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      username: email,
+      email,
+      emailVerified: true,
+      enabled: true,
+      firstName: "Pat",
+      lastName: "Pilot",
+      credentials: [{ type: "password", value: PASSWORD, temporary: false }],
+    }),
+  });
+  expect(created.status).toBe(201);
+}
 
-  // An admin invites them (the dev login stands in for the admin's own sign-in).
+/** Fills Keycloak's login form. */
+async function keycloakLogin(page: Page, email: string) {
+  await expect(page).toHaveURL(new RegExp(`^${KEYCLOAK_URL}/realms/builder/`));
+  await page.locator("#username").fill(email);
+  await page.locator("#password").fill(PASSWORD);
+  await page.locator("#kc-login").click();
+}
+
+async function adminInvite(request: import("@playwright/test").APIRequestContext, email: string) {
+  // The dev login stands in for an admin's own sign-in.
   const login = await request.post(`${CONTENT_API}/auth/dev-login`, {
     data: { orgId: "org_demo", userId: "e2e-admin", role: "admin" },
   });
@@ -19,54 +52,63 @@ test("an invited person signs in with an email link, joins the org and is signed
     data: { email, role: "editor" },
   });
   expect(invite.status()).toBe(201);
-  const { url, emailed } = (await invite.json()) as { url: string; emailed: boolean };
-  expect(emailed).toBe(true);
-  const inviteEmail = await lastEmailTo(email);
-  expect(inviteEmail.text).toContain(url);
+  return (await invite.json()) as { url: string; emailed: boolean };
+}
 
-  // The invite link asks them to sign in as the invited address.
+test("an invited person signs in with Keycloak, joins the org and signs out", async ({
+  page,
+  request,
+}) => {
+  const email = `pilot-${Date.now()}@example.com`;
+  const { url, emailed } = await adminInvite(request, email);
+  expect(emailed).toBe(true);
+  expect((await lastEmailTo(email)).text).toContain(url);
+  await keycloakUser(email);
+
+  // The invite link sends them to Keycloak and back.
   await page.goto(url);
   await expect(page.getByRole("heading", { name: "Join Demo" })).toBeVisible();
-  await expect(page.getByLabel("Work email")).toHaveValue(email);
-  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
-  await expect(page.getByText(`Check your inbox at ${email}`)).toBeVisible();
-
-  // The magic link signs them in and brings them back to the invite.
-  const signInEmail = await lastEmailTo(email);
-  expect(signInEmail.subject).toBe("Sign in to Builder");
-  const link = /(http\S+\/auth\/magic-link\/verify\S+)/.exec(signInEmail.text)?.[1];
-  expect(link).toBeTruthy();
-  await page.goto(link as string);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await keycloakLogin(page, email);
   await page.getByRole("button", { name: "Join Demo" }).click();
 
   await expect(page.getByRole("heading", { name: "Sites" })).toBeVisible();
   await expect(page.getByText(`${email} · editor`)).toBeVisible();
 
-  // The sign-in survives a new tab (cookie), and they appear as a member.
+  // A new tab signs in through Keycloak's session without the form, and lists them as a member.
   const second = await page.context().newPage();
   await second.goto("/#/members");
   await expect(second.getByRole("heading", { name: "Members" })).toBeVisible();
   await expect(second.getByText(email, { exact: true })).toBeVisible();
   await second.close();
 
+  // Signing out ends the Keycloak session too.
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in to Builder" })).toBeVisible();
-  await page.reload();
-  await expect(page.getByRole("heading", { name: "Sign in to Builder" })).toBeVisible();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.locator("#username")).toBeVisible();
 });
 
-test("an uninvited address gets no email and a used link is refused", async ({ page }) => {
-  const email = `stranger-${Date.now()}@example.com`;
-  await page.goto("/");
-  await page.getByLabel("Work email").fill(email);
-  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
-  // Same answer as for a real account, so the form reveals nothing.
-  await expect(page.getByText(`Check your inbox at ${email}`)).toBeVisible();
+test("an invite for another address is refused", async ({ page, request }) => {
+  const invited = `invited-${Date.now()}@example.com`;
+  const other = `other-${Date.now()}@example.com`;
+  const { url } = await adminInvite(request, invited);
+  await keycloakUser(other);
 
-  await page.goto(
-    `${CONTENT_API}/auth/magic-link/verify?token=not-a-real-token&callbackURL=${encodeURIComponent("http://localhost:5173/#/")}`,
-  );
-  await expect(page.getByText(/invalid or was already used/)).toBeVisible();
+  await page.goto(url);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await keycloakLogin(page, other);
+  await expect(
+    page.getByText(`This invite is for ${invited}, but you're signed in as ${other}.`),
+  ).toBeVisible();
+});
+
+test("people without an account can register in Keycloak", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Create an account" }).click();
+  await expect(page).toHaveURL(new RegExp(`^${KEYCLOAK_URL}/realms/builder/`));
+  await expect(page.getByRole("heading", { name: "Register" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Email" })).toBeVisible();
 });
 
 test("viewers see pages but no edit or publish controls", async ({ page }) => {

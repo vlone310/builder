@@ -11,6 +11,9 @@ const databaseUrl =
 const jwtSecret = "e2e-secret-that-is-at-least-32-characters-long";
 /** The Content API writes sign-in and invite emails here; tests read the links. */
 export const EMAIL_OUTBOX = fileURLToPath(new URL("results/outbox.jsonl", import.meta.url));
+/** Keycloak with the builder realm: the local one if it runs, else a throwaway container. */
+export const KEYCLOAK_URL = "http://localhost:8080";
+const realmDir = fileURLToPath(new URL("../infra/keycloak/realm", import.meta.url));
 
 export default defineConfig({
   testDir: "tests",
@@ -30,6 +33,18 @@ export default defineConfig({
   },
   webServer: [
     {
+      command: [
+        "docker run --rm --name builder-e2e-keycloak -p 8080:8080",
+        "-e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin",
+        "-e BUILDER_EDITOR_URL=http://localhost:5173",
+        `-v ${realmDir}:/opt/keycloak/data/import:ro`,
+        "keycloak/keycloak:26.7.5 start-dev --import-realm",
+      ].join(" "),
+      url: `${KEYCLOAK_URL}/realms/builder/.well-known/openid-configuration`,
+      reuseExistingServer: true,
+      timeout: 180_000,
+    },
+    {
       command: "node dist/server.js",
       cwd: "../services/content-api",
       url: "http://localhost:4000/health",
@@ -41,7 +56,7 @@ export default defineConfig({
         CONTENT_API_PUBLIC_URL: "http://localhost:4000",
         EDITOR_ORIGIN: "http://localhost:5173",
         CONTENT_API_DEV_LOGIN: "1",
-        BETTER_AUTH_SECRET: "e2e-sign-in-secret-of-at-least-32-characters",
+        KEYCLOAK_ISSUER: `${KEYCLOAK_URL}/realms/builder`,
         EMAIL_OUTBOX_FILE: EMAIL_OUTBOX,
       },
     },

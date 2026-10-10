@@ -1,36 +1,11 @@
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
-import { auth, devLogin, type Role } from "../lib/api";
+import { devLogin, type Role } from "../lib/api";
 import { useSession } from "../lib/session";
 import { Button, Input, Label, Select } from "../ui";
-import { useAsync } from "./useAsync";
 
 const ROLES: Role[] = ["admin", "developer", "editor", "viewer"];
-
-/** Better Auth sends people back with ?error=… when a link or sign-up fails. */
-const SIGN_IN_ERRORS: Record<string, string> = {
-  INVALID_TOKEN: "That sign-in link is invalid or was already used. Request a new one.",
-  EXPIRED_TOKEN: "That sign-in link has expired. Request a new one.",
-  new_user_signup_disabled: "This email has no invite yet. Ask an admin of your org to invite you.",
-  unable_to_create_user: "This email has no invite yet. Ask an admin of your org to invite you.",
-  ATTEMPTS_EXCEEDED: "That sign-in link was already used. Request a new one.",
-};
-
-/** Reads and clears the ?error=… Better Auth left on the URL. */
-function useSignInError(): string | null {
-  const [error] = useState(() => new URLSearchParams(window.location.search).get("error"));
-  useEffect(() => {
-    if (!error) return;
-    const url = new URL(window.location.href);
-    url.searchParams.delete("error");
-    window.history.replaceState(null, "", url);
-  }, [error]);
-  if (!error) return null;
-  return SIGN_IN_ERRORS[error] ?? `Sign-in failed (${error.replaceAll("_", " ").toLowerCase()}).`;
-}
-
-/** Where Better Auth returns after sign-in: this page, as it is now. */
-const here = () =>
-  `${window.location.origin}${window.location.pathname}${window.location.hash || "#/"}`;
+/** One automatic trip to Keycloak per tab, so an error page never loops. */
+const AUTO_TRIED = "builder.autoSignIn";
 
 export function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -43,83 +18,48 @@ export function Card({ title, children }: { title: string; children: ReactNode }
   );
 }
 
-/** Email link and Google sign-in; returns to the current page afterwards. */
-export function SignInForm({ defaultEmail = "" }: { defaultEmail?: string }) {
-  const providers = useAsync(() => auth.providers(), []);
-  const [email, setEmail] = useState(defaultEmail);
-  const [sentTo, setSentTo] = useState<string | null>(null);
+/** Keycloak sign-in and registration; returns to the current page afterwards. */
+export function SignInForm({ email }: { email?: string }) {
+  const { providers, oidc, error } = useSession();
   const [busy, setBusy] = useState(false);
-  const linkError = useSignInError();
-  const [error, setError] = useState<string | null>(linkError);
 
-  async function sendLink(event: FormEvent) {
-    event.preventDefault();
+  // Someone signed in elsewhere in this browser: Keycloak's session signs this tab in too.
+  useEffect(() => {
+    if (!oidc || error || !oidc.wasSignedIn()) return;
+    try {
+      if (sessionStorage.getItem(AUTO_TRIED)) return;
+      sessionStorage.setItem(AUTO_TRIED, "1");
+    } catch {
+      return;
+    }
     setBusy(true);
-    setError(null);
-    try {
-      await auth.sendLink(email, here());
-      setSentTo(email);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
+    void oidc.signIn(email ? { loginHint: email } : {});
+  }, [oidc, error, email]);
+
+  if (!providers) {
+    return <p className="text-xs text-danger">{error ?? "Loading…"}</p>;
   }
 
-  async function google() {
-    setError(null);
-    try {
-      window.location.assign((await auth.google(here())).url);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  if (providers.error) {
-    return (
-      <p className="text-xs text-danger">Can't reach the Content API: {providers.error.message}</p>
-    );
-  }
-  if (!providers.data) return <p className="text-xs text-muted">Loading…</p>;
-  const { emailLink, google: hasGoogle, devLogin: hasDevLogin } = providers.data;
+  const go = (register: boolean) => {
+    setBusy(true);
+    void oidc?.signIn({ ...(email ? { loginHint: email } : {}), register });
+  };
 
   return (
     <div className="space-y-4">
       {error && <p className="text-xs text-danger">{error}</p>}
-      {emailLink &&
-        (sentTo ? (
-          <p role="status" className="rounded-md bg-blue-50 p-3 text-xs text-blue-900">
-            Check your inbox at <strong>{sentTo}</strong>. The link signs you in once and expires in
-            15 minutes.{" "}
-            <button type="button" className="underline" onClick={() => setSentTo(null)}>
-              Use another email
-            </button>
-          </p>
-        ) : (
-          <form onSubmit={sendLink} className="space-y-3">
-            <div>
-              <Label htmlFor="email">Work email</Label>
-              <Input
-                id="email"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-            <Button type="submit" variant="primary" className="w-full" disabled={busy}>
-              {busy ? "Sending…" : "Email me a sign-in link"}
-            </Button>
-          </form>
-        ))}
-      {hasGoogle && (
-        <Button className="w-full" onClick={google}>
-          Continue with Google
-        </Button>
+      {oidc && (
+        <div className="space-y-2">
+          <Button variant="primary" className="w-full" disabled={busy} onClick={() => go(false)}>
+            {busy ? "Redirecting…" : "Sign in"}
+          </Button>
+          <Button className="w-full" disabled={busy} onClick={() => go(true)}>
+            Create an account
+          </Button>
+        </div>
       )}
-      {hasDevLogin && <DevLoginForm />}
-      {!emailLink && !hasGoogle && !hasDevLogin && (
+      {providers.devLogin && <DevLoginForm />}
+      {!oidc && !providers.devLogin && (
         <p className="text-xs text-muted">Sign-in is not configured on the Content API.</p>
       )}
     </div>

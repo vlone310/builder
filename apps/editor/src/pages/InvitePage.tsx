@@ -8,17 +8,18 @@ import { useAsync } from "./useAsync";
 
 /** #/invite/<token>: sign in as the invited email, then join the org. */
 export function InvitePage({ token }: { token: string }) {
-  const { identity, refreshIdentity, chooseOrg, signOut } = useSession();
+  const { identity, refreshIdentity, chooseOrg, signOut, oidc, restoring } = useSession();
   const invite = useAsync(() => auth.invite(token), [token]);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (restoring) return;
     void refreshIdentity()
       .catch(() => null)
       .finally(() => setChecked(true));
-  }, [refreshIdentity]);
+  }, [refreshIdentity, restoring]);
 
   if (invite.error) {
     return (
@@ -39,7 +40,9 @@ export function InvitePage({ token }: { token: string }) {
     setBusy(true);
     setError(null);
     try {
-      const joined = await auth.acceptInvite(token);
+      const keycloakToken = await oidc?.accessToken();
+      if (!keycloakToken) throw new Error("Your sign-in expired; sign in again");
+      const joined = await auth.acceptInvite(keycloakToken, token);
       await refreshIdentity();
       await chooseOrg(joined.org.id);
       navigate("/");
@@ -56,8 +59,10 @@ export function InvitePage({ token }: { token: string }) {
       </p>
       {!identity ? (
         <>
-          <p className="text-xs text-muted">Sign in as {email} to accept.</p>
-          <SignInForm defaultEmail={email} />
+          <p className="text-xs text-muted">
+            Sign in as {email} to accept, or create an account with that address.
+          </p>
+          <SignInForm email={email} />
         </>
       ) : identity.user.email.toLowerCase() === email ? (
         <Button variant="primary" className="w-full" disabled={busy} onClick={accept}>

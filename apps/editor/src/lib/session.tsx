@@ -16,15 +16,17 @@ import {
   createApi,
   loadSession,
   type OrgChoice,
+  type Providers,
   type Session,
   saveSession,
 } from "./api";
+import { createOidc, type Oidc } from "./oidc";
 
 /** Refresh the org token this long before it expires. */
 const REFRESH_MARGIN_MS = 60_000;
 const LAST_ORG_KEY = "builder.lastOrg";
 
-/** Who the sign-in cookie says is signed in, before an org is chosen. */
+/** Who Keycloak says is signed in, before an org is chosen. */
 export interface Identity {
   user: { id: string; email: string; name: string };
   orgs: OrgChoice[];
@@ -34,11 +36,16 @@ interface SessionContext {
   session: Session | null;
   api: Api | null;
   identity: Identity | null;
-  /** True until the first check for a sign-in cookie finishes. */
+  providers: Providers | null;
+  /** Keycloak sign-in; null when the Content API has it off. */
+  oidc: Oidc | null;
+  /** True until sign-in state is known (Keycloak redirect handled, tokens checked). */
   restoring: boolean;
+  /** Set when the Content API is unreachable or Keycloak sent back an error. */
+  error: string | null;
   /** Dev login: a ready-made session. */
   signIn(session: Session): void;
-  /** Exchanges the sign-in cookie for a token in this org. */
+  /** Exchanges the Keycloak token for a token in this org. */
   chooseOrg(orgId: string): Promise<void>;
   /** Re-reads the signed-in user's orgs (after accepting an invite). */
   refreshIdentity(): Promise<Identity | null>;
@@ -63,12 +70,18 @@ function lastOrg(): string | null {
   }
 }
 
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(loadSession);
   const [identity, setIdentity] = useState<Identity | null>(null);
-  const [restoring, setRestoring] = useState(session === null);
+  const [providers, setProviders] = useState<Providers | null>(null);
+  const [oidc, setOidc] = useState<Oidc | null>(null);
+  const [restoring, setRestoring] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const current = useRef(session);
   current.current = session;
+  const oidcRef = useRef<Oidc | null>(null);
   const refreshing = useRef<Promise<string> | null>(null);
 
   const update = useCallback((next: Session | null) => {
@@ -77,44 +90,56 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setSession(next);
   }, []);
 
+  const keycloakToken = useCallback(async () => {
+    const token = await oidcRef.current?.accessToken();
+    if (!token) throw new ApiError(401, "unauthorized", "Signed out of Keycloak");
+    return token;
+  }, []);
+
   const chooseOrg = useCallback(
     async (orgId: string) => {
-      const result = await auth.token(orgId);
+      const result = await auth.token(await keycloakToken(), orgId);
       rememberOrg(orgId);
       update({ ...result, via: "sign-in" });
     },
-    [update],
+    [keycloakToken, update],
   );
 
   const refreshIdentity = useCallback(async () => {
-    try {
-      const next = await auth.orgs();
-      setIdentity(next);
-      return next;
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        setIdentity(null);
-        return null;
-      }
-      throw error;
+    const token = await oidcRef.current?.accessToken();
+    if (!token) {
+      setIdentity(null);
+      return null;
     }
+    const next = await auth.orgs(token);
+    setIdentity(next);
+    return next;
   }, []);
 
-  // First load without a stored token: a sign-in cookie may still be there
-  // (another tab, or the redirect back from a magic link).
+  // Start-up: learn how to sign in, finish a Keycloak redirect if this is one,
+  // and pick up an existing sign-in.
   useEffect(() => {
-    if (current.current) return;
     let cancelled = false;
     void (async () => {
       try {
-        const found = await refreshIdentity();
-        if (cancelled || !found) return;
-        const remembered = found.orgs.find((org) => org.id === lastOrg());
-        const only = found.orgs.length === 1 ? found.orgs[0] : undefined;
+        const found = await auth.providers();
+        if (cancelled) return;
+        setProviders(found);
+        if (!found.oidc) return;
+        const client = await createOidc(found.oidc);
+        if (cancelled) return;
+        oidcRef.current = client;
+        setOidc(client);
+        if (current.current?.via === "dev") return;
+        const signedIn = await refreshIdentity();
+        if (cancelled || !signedIn) return;
+        if (current.current) return;
+        const remembered = signedIn.orgs.find((org) => org.id === lastOrg());
+        const only = signedIn.orgs.length === 1 ? signedIn.orgs[0] : undefined;
         const pick = remembered ?? only;
         if (pick && !window.location.hash.startsWith("#/invite/")) await chooseOrg(pick.id);
-      } catch {
-        // The Content API is unreachable or sign-in is off; the login page says more.
+      } catch (e) {
+        if (!cancelled) setError(message(e));
       } finally {
         if (!cancelled) setRestoring(false);
       }
@@ -129,7 +154,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setIdentity(null);
   }, [update]);
 
-  /** The current token, refreshed first when it is about to expire. */
+  /** The current org token, refreshed first when it is about to expire. */
   const getToken = useCallback(async (): Promise<string> => {
     const active = current.current;
     if (!active) throw new ApiError(401, "unauthorized", "Signed out");
@@ -138,28 +163,28 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       active.expiresAt !== undefined &&
       Date.parse(active.expiresAt) - Date.now() < REFRESH_MARGIN_MS;
     if (!due) return active.token;
-    refreshing.current ??= auth
-      .token(active.org.id)
+    refreshing.current ??= keycloakToken()
+      .then((kc) => auth.token(kc, active.org.id))
       .then((result) => {
         update({ ...result, via: "sign-in" });
         return result.token;
       })
-      .catch((error) => {
-        if (error instanceof ApiError && error.status === 401) {
-          // The sign-in ended: back to the login page.
+      .catch((e) => {
+        if (e instanceof ApiError && e.status === 401) {
+          // The Keycloak session ended: back to the sign-in page.
           signOutLocally();
-        } else if (error instanceof ApiError && error.status === 403) {
+        } else if (e instanceof ApiError && e.status === 403) {
           // Removed from this org: back to the org picker, still signed in.
           update(null);
           void refreshIdentity().catch(() => {});
         }
-        throw error;
+        throw e;
       })
       .finally(() => {
         refreshing.current = null;
       });
     return refreshing.current;
-  }, [update, signOutLocally, refreshIdentity]);
+  }, [keycloakToken, update, signOutLocally, refreshIdentity]);
 
   const orgKey = session ? `${session.org.id}:${session.userId}` : null;
   // One client per org and user: token refreshes must not reload the pages using it.
@@ -170,17 +195,32 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       session,
       api,
       identity,
+      providers,
+      oidc,
       restoring,
+      error,
       signIn: (next) => update(next),
       chooseOrg,
       refreshIdentity,
       async signOut() {
         const via = current.current?.via;
         signOutLocally();
-        if (via !== "dev") await auth.signOut().catch(() => {});
+        if (via !== "dev") await oidcRef.current?.signOut();
       },
     }),
-    [session, api, identity, restoring, update, chooseOrg, refreshIdentity, signOutLocally],
+    [
+      session,
+      api,
+      identity,
+      providers,
+      oidc,
+      restoring,
+      error,
+      update,
+      chooseOrg,
+      refreshIdentity,
+      signOutLocally,
+    ],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

@@ -1,7 +1,7 @@
--- Identity tables belong to the platform, not a tenant: builder_app (which
--- serves tenant queries) gets no access. The default privileges from the rls
--- migration granted it, so take them back.
-REVOKE ALL ON users, auth_sessions, auth_accounts, auth_verifications FROM builder_app;
+-- users belongs to the platform, not a tenant: builder_app (which serves tenant
+-- queries) gets no access. The default privileges from the rls migration
+-- granted it, so take them back.
+REVOKE ALL ON users FROM builder_app;
 --> statement-breakpoint
 ALTER TABLE invites ENABLE ROW LEVEL SECURITY;
 --> statement-breakpoint
@@ -32,19 +32,6 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
 $$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION builder_resolve_invite(text) FROM PUBLIC;
---> statement-breakpoint
--- Sign-up is open only to emails with a live invite.
-CREATE FUNCTION builder_email_invited(p_email text)
-RETURNS boolean
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
-  SELECT EXISTS (
-    SELECT 1 FROM invites i
-    WHERE i.email = lower(p_email) AND i.accepted_at IS NULL AND i.revoked_at IS NULL
-      AND i.expires_at > now()
-  )
-$$;
---> statement-breakpoint
-REVOKE ALL ON FUNCTION builder_email_invited(text) FROM PUBLIC;
 --> statement-breakpoint
 -- Members of the current org with their name and email. builder_app cannot read
 -- users, so this joins them for exactly one org.

@@ -1,7 +1,16 @@
 import type { PageDocument, PageNode, PageSeo, Role } from "@builder/core";
 
+declare global {
+  interface Window {
+    /** Set by /config.js, which the container writes from its environment. */
+    __BUILDER_CONFIG__?: { contentApiUrl?: string };
+  }
+}
+
 export const CONTENT_API_URL = (
-  import.meta.env.VITE_CONTENT_API_URL ?? "http://localhost:4000"
+  window.__BUILDER_CONFIG__?.contentApiUrl ||
+  import.meta.env.VITE_CONTENT_API_URL ||
+  "http://localhost:4000"
 ).replace(/\/+$/, "");
 
 export type { Role };
@@ -14,7 +23,7 @@ export interface Session {
   role: Role;
   org: { id: string; name: string };
   user?: { email: string; name: string };
-  /** "sign-in" sessions refresh their token with the sign-in cookie. */
+  /** "sign-in" sessions refresh their org token with the Keycloak token. */
   via: "dev" | "sign-in";
 }
 
@@ -132,11 +141,9 @@ async function request<T>(
   method: string,
   path: string,
   body?: unknown,
-  credentials: RequestCredentials = "omit",
 ): Promise<T> {
   const response = await fetch(`${CONTENT_API_URL}${path}`, {
     method,
-    credentials,
     headers: {
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(body !== undefined ? { "content-type": "application/json" } : {}),
@@ -166,58 +173,44 @@ export function devLogin(input: { orgId: string; userId: string; role: Role }) {
   );
 }
 
-/**
- * Sign-in calls. They carry the Content API's sign-in cookie (same site as the
- * editor), never a bearer token.
- */
-const withCookie = <T>(method: string, path: string, body?: unknown) =>
-  request<T>(null, method, path, body, "include");
+export interface Providers {
+  /** Keycloak realm and the editor's public client; null when sign-in is off. */
+  oidc: { issuer: string; clientId: string } | null;
+  devLogin: boolean;
+}
 
+/** Sign-in calls; those that need it carry the Keycloak access token. */
 export const auth = {
-  providers: () =>
-    request<{ emailLink: boolean; google: boolean; devLogin: boolean }>(
-      null,
-      "GET",
-      "/auth/providers",
-    ),
-  sendLink: (email: string, callbackURL: string) =>
-    withCookie<{ status: boolean }>("POST", "/auth/sign-in/magic-link", {
-      email,
-      callbackURL,
-      errorCallbackURL: callbackURL,
-    }),
-  google: (callbackURL: string) =>
-    withCookie<{ url: string }>("POST", "/auth/sign-in/social", {
-      provider: "google",
-      callbackURL,
-      errorCallbackURL: callbackURL,
-    }),
-  /** The signed-in user and their orgs; 401 when signed out. */
-  orgs: () =>
-    withCookie<{ user: { id: string; email: string; name: string }; orgs: OrgChoice[] }>(
+  providers: () => request<Providers>(null, "GET", "/auth/providers"),
+  /** The signed-in user and their orgs. */
+  orgs: (keycloakToken: string) =>
+    request<{ user: { id: string; email: string; name: string }; orgs: OrgChoice[] }>(
+      keycloakToken,
       "GET",
       "/auth/orgs",
     ),
-  token: (orgId: string) =>
-    withCookie<{
+  token: (keycloakToken: string, orgId: string) =>
+    request<{
       token: string;
       expiresAt: string;
       userId: string;
       role: Role;
       org: { id: string; name: string };
       user: { email: string; name: string };
-    }>("POST", "/auth/token", { orgId }),
+    }>(keycloakToken, "POST", "/auth/token", { orgId }),
   invite: (token: string) =>
     request<{ org: { id: string; name: string }; email: string; role: Role; expiresAt: string }>(
       null,
       "GET",
       `/auth/invites/${encodeURIComponent(token)}`,
     ),
-  acceptInvite: (token: string) =>
-    withCookie<{ org: { id: string; name: string }; role: Role }>("POST", "/auth/invites/accept", {
-      token,
-    }),
-  signOut: () => withCookie<unknown>("POST", "/auth/sign-out", {}),
+  acceptInvite: (keycloakToken: string, token: string) =>
+    request<{ org: { id: string; name: string }; role: Role }>(
+      keycloakToken,
+      "POST",
+      "/auth/invites/accept",
+      { token },
+    ),
 };
 
 /** An API client; getToken returns a valid org token (refreshing it when due). */

@@ -1,4 +1,5 @@
 import { appendFile } from "node:fs/promises";
+import { createTransport } from "nodemailer";
 
 export interface EmailMessage {
   to: string;
@@ -9,19 +10,11 @@ export interface EmailMessage {
 
 export type EmailSender = (message: EmailMessage) => Promise<void>;
 
-/** Sends through the Resend HTTP API. */
-export function resendSender({ apiKey, from }: { apiKey: string; from: string }): EmailSender {
+/** Sends through an SMTP server, e.g. smtp://user:pass@mail.example.com:587. */
+export function smtpSender({ url, from }: { url: string; from: string }): EmailSender {
+  const transport = createTransport(url);
   return async (message) => {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ from, ...message }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(`Resend refused the email (${response.status}): ${detail.slice(0, 200)}`);
-    }
+    await transport.sendMail({ from, ...message });
   };
 }
 

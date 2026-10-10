@@ -13,13 +13,23 @@ export const EDIT_PARAM = "builder.edit";
  *     matcher: [{ source: "/:path*", has: [{ type: "query", key: "builder.edit" }] }],
  *   };
  */
-export function rewriteEditRequest(request: NextRequest, editPath = "/builder-edit"): NextResponse {
+export function rewriteEditRequest(
+  request: NextRequest,
+  editPath = "/builder-edit",
+  editorOrigin?: string,
+): NextResponse {
   const token = request.nextUrl.searchParams.get(EDIT_PARAM);
   if (!token) return NextResponse.next();
   const url = new URL(editPath, request.url);
   url.searchParams.set("token", token);
   url.searchParams.set("slug", normalizeSlug(request.nextUrl.pathname));
-  return NextResponse.rewrite(url);
+  const response = NextResponse.rewrite(url);
+  // Set here, at request time, so one build serves any editor origin; next.config
+  // headers are fixed when the app is built.
+  if (editorOrigin) {
+    response.headers.set("Content-Security-Policy", `frame-ancestors 'self' ${editorOrigin}`);
+  }
+  return response;
 }
 
 /** Query parameter on preview links: host-url/<slug>?builder.preview=<token>. */
@@ -39,7 +49,7 @@ export const PREVIEW_PARAM = "builder.preview";
  */
 export function builderProxy(
   request: NextRequest,
-  paths: { edit?: string; preview?: string } = {},
+  paths: { edit?: string; preview?: string; editorOrigin?: string } = {},
 ): NextResponse {
   const preview = request.nextUrl.searchParams.get(PREVIEW_PARAM);
   if (preview) {
@@ -49,7 +59,7 @@ export function builderProxy(
     url.searchParams.set("token", preview);
     return NextResponse.redirect(url, 307);
   }
-  return rewriteEditRequest(request, paths.edit);
+  return rewriteEditRequest(request, paths.edit, paths.editorOrigin);
 }
 
 /** Headers for the edit route: never cached, indexed, or leaking the token as a referrer. */

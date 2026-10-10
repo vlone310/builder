@@ -6,3 +6,4 @@
 **/.env.local
 e2e/results
 .git
+.local

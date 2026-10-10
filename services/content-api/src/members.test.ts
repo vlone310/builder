@@ -47,12 +47,8 @@ describe.skipIf(!url)("roles and members", () => {
       jwtSecret: secret,
       editTokens: await createEditTokenSigner({ issuer: "http://content.test" }),
       corsOrigins: ["http://editor.test"],
-      signIn: {
-        secret: "another-test-secret-of-32-characters!",
-        baseUrl: "http://content.test",
-        email: async (message) => {
-          outbox.push(message);
-        },
+      email: async (message) => {
+        outbox.push(message);
       },
     });
     await withOrg(handle.db, orgId, async (tx) => {

@@ -1,152 +1,102 @@
-import { randomBytes } from "node:crypto";
 import {
-  authAccounts,
-  authSessions,
-  authVerifications,
   type Db,
-  emailInvited,
   invites,
   memberships,
-  newId,
   normalizeEmail,
   type Role,
   resolveInvite,
+  upsertUser,
   userMemberships,
-  users,
   withOrg,
 } from "@builder/db";
-import { betterAuth } from "better-auth";
-import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { magicLink } from "better-auth/plugins/magic-link";
 import { and, eq, isNull } from "drizzle-orm";
-import { type Context, Hono, type MiddlewareHandler } from "hono";
+import { type Context, Hono } from "hono";
+import { createRemoteJWKSet, type JWTVerifyGetKey, jwtVerify } from "jose";
 import { z } from "zod";
 import { signSessionToken } from "./auth";
-import { type EmailSender, linkEmail } from "./email";
 import { ApiError, parseJson } from "./http";
 
-/** Org session tokens are short; the editor refreshes them with its sign-in cookie. */
+/** Org session tokens are short; the editor refreshes them with its Keycloak token. */
 export const ORG_TOKEN_TTL_SECONDS = 15 * 60;
 
-export interface SignInOptions {
-  db: Db;
-  /** Signs Better Auth cookies; 32+ characters. */
-  secret: string;
-  /** The Content API's public URL; magic links point at it. */
-  baseUrl: string;
-  /** Editor origins: CORS with credentials and allowed sign-in callback URLs. */
-  trustedOrigins: string[];
-  email: EmailSender;
-  google?: { clientId: string; clientSecret: string } | undefined;
+export interface OidcOptions {
+  /** The Keycloak realm's issuer, e.g. https://auth.example.com/realms/builder. */
+  issuer: string;
+  /** Required in the access token's aud claim (an audience mapper on the editor client). */
+  audience: string;
+  /** The editor's public client, reported to the editor at /auth/providers. */
+  editorClientId: string;
+  /** Where to fetch the realm's keys, when the issuer URL is not reachable from the API. */
+  jwksUrl?: string | undefined;
+  /** Tests pass local keys instead. */
+  keys?: JWTVerifyGetKey | undefined;
 }
 
-export type Auth = ReturnType<typeof createAuth>;
+export interface Identity {
+  id: string;
+  email: string;
+  emailVerified: boolean;
+  name: string;
+}
 
-const randomId = () => randomBytes(16).toString("base64url");
+const claimsSchema = z.object({
+  sub: z.string().min(1),
+  email: z.string().min(1),
+  email_verified: z.boolean().optional(),
+  name: z.string().optional(),
+  preferred_username: z.string().optional(),
+});
 
-/**
- * Better Auth owns identity: users, sign-in sessions, OAuth accounts and
- * magic-link verifications. Sign-up is open only to emails with a live invite;
- * org membership and roles stay in our tables.
- */
-export function createAuth(options: SignInOptions) {
-  const { db, email } = options;
-  return betterAuth({
-    appName: "Builder",
-    baseURL: options.baseUrl,
-    basePath: "/auth",
-    secret: options.secret,
-    trustedOrigins: options.trustedOrigins,
-    database: drizzleAdapter(db, {
-      provider: "pg",
-      schema: {
-        user: users,
-        session: authSessions,
-        account: authAccounts,
-        verification: authVerifications,
-      },
-    }),
-    session: { expiresIn: 7 * 24 * 3600, updateAge: 24 * 3600 },
-    account: { accountLinking: { enabled: true, trustedProviders: ["google"] } },
-    advanced: {
-      cookiePrefix: "builder",
-      database: { generateId: ({ model }) => (model === "user" ? newId("usr") : randomId()) },
-    },
-    ...(options.google
-      ? {
-          socialProviders: {
-            google: {
-              clientId: options.google.clientId,
-              clientSecret: options.google.clientSecret,
-              prompt: "select_account" as const,
-            },
-          },
-        }
-      : {}),
-    databaseHooks: {
-      user: {
-        create: {
-          before: async (user) => {
-            if (!(await emailInvited(db, user.email))) return false;
-            return { data: { ...user, email: normalizeEmail(user.email) } };
-          },
-        },
-      },
-    },
-    plugins: [
-      magicLink({
-        expiresIn: 15 * 60,
-        storeToken: "hashed",
-        sendMagicLink: async ({ email: to, url }) => {
-          // Unknown and uninvited addresses get nothing, and the response is the
-          // same either way, so the form does not reveal who has an account.
-          const known = await db
-            .select({ id: users.id })
-            .from(users)
-            .where(eq(users.email, normalizeEmail(to)));
-          if (known.length === 0 && !(await emailInvited(db, to))) return;
-          await email(
-            linkEmail({
-              to,
-              subject: "Sign in to Builder",
-              intro:
-                "Use this link to sign in to Builder. It works once and expires in 15 minutes.",
-              action: "Sign in",
-              url,
-              outro: "If you did not ask to sign in, you can ignore this email.",
-            }),
-          );
-        },
-      }),
-    ],
-  });
+/** Verifies Keycloak access tokens: signature from the realm's JWKS, issuer, audience, expiry. */
+export function createOidcVerifier(options: OidcOptions) {
+  const keys =
+    options.keys ??
+    createRemoteJWKSet(
+      new URL(options.jwksUrl ?? `${options.issuer}/protocol/openid-connect/certs`),
+    );
+  return async (token: string): Promise<Identity> => {
+    let payload: unknown;
+    try {
+      ({ payload } = await jwtVerify(token, keys, {
+        issuer: options.issuer,
+        audience: options.audience,
+        algorithms: ["RS256", "PS256", "ES256"],
+      }));
+    } catch {
+      throw new ApiError(401, "unauthorized", "Invalid or expired sign-in token");
+    }
+    const claims = claimsSchema.safeParse(payload);
+    if (!claims.success) {
+      throw new ApiError(401, "unauthorized", "Sign-in token is missing sub or email");
+    }
+    return {
+      id: claims.data.sub,
+      email: normalizeEmail(claims.data.email),
+      emailVerified: claims.data.email_verified === true,
+      name: claims.data.name ?? claims.data.preferred_username ?? "",
+    };
+  };
 }
 
 const tokenSchema = z.object({ orgId: z.string().min(1) });
 const acceptSchema = z.object({ token: z.string().min(1) });
 
 /**
- * Routes that turn a Better Auth sign-in into what the rest of the API uses:
- * the list of the user's orgs, and a short org-scoped session token.
+ * Routes that turn a Keycloak sign-in into what the rest of the API uses: the
+ * user's orgs, a short org-scoped session token, and invite acceptance.
  */
-export function signInRoutes(auth: Auth, options: SignInOptions, jwtSecret: string) {
-  const { db } = options;
+export function signInRoutes(options: { db: Db; oidc: OidcOptions; jwtSecret: string }) {
+  const { db, jwtSecret } = options;
+  const verify = createOidcVerifier(options.oidc);
   const app = new Hono();
 
-  // Cookie-authenticated writes must come from the editor. Better Auth checks
-  // its own routes; this covers ours.
-  const sameOrigin: MiddlewareHandler = async (c, next) => {
-    const origin = c.req.header("origin");
-    if (!origin || !options.trustedOrigins.includes(origin)) {
-      throw new ApiError(403, "forbidden", "Origin not allowed");
-    }
-    await next();
-  };
-
-  async function signedInUser(c: Context) {
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
-    if (!session) throw new ApiError(401, "unauthorized", "Not signed in");
-    return session.user;
+  /** The Keycloak user behind the request; their profile is kept fresh in users. */
+  async function signedInUser(c: Context): Promise<Identity> {
+    const token = /^Bearer (.+)$/.exec(c.req.header("authorization") ?? "")?.[1];
+    if (!token) throw new ApiError(401, "unauthorized", "Missing sign-in token");
+    const identity = await verify(token);
+    await upsertUser(db, identity);
+    return identity;
   }
 
   app.get("/auth/orgs", async (c) => {
@@ -158,7 +108,7 @@ export function signInRoutes(auth: Auth, options: SignInOptions, jwtSecret: stri
     });
   });
 
-  app.post("/auth/token", sameOrigin, async (c) => {
+  app.post("/auth/token", async (c) => {
     const user = await signedInUser(c);
     const { orgId } = await parseJson(c, tokenSchema);
     const membership = (await userMemberships(db, user.id)).find((m) => m.orgId === orgId);
@@ -190,17 +140,20 @@ export function signInRoutes(auth: Auth, options: SignInOptions, jwtSecret: stri
     });
   });
 
-  app.post("/auth/invites/accept", sameOrigin, async (c) => {
+  app.post("/auth/invites/accept", async (c) => {
     const user = await signedInUser(c);
     const { token } = await parseJson(c, acceptSchema);
     const invite = await resolveInvite(db, token);
     if (!invite) throw new ApiError(404, "not_found", "This invite is invalid or has expired");
-    if (!user.emailVerified || normalizeEmail(user.email) !== invite.email) {
+    if (user.email !== invite.email) {
       throw new ApiError(
         403,
         "invite_email_mismatch",
         `This invite is for ${invite.email}; you are signed in as ${user.email}`,
       );
+    }
+    if (!user.emailVerified) {
+      throw new ApiError(403, "email_not_verified", `Verify ${user.email} before accepting`);
     }
     const role = await withOrg(db, invite.orgId, async (tx) => {
       const claimed = await tx

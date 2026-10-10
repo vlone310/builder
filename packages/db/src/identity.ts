@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { type Db, hashApiKey, type Tx } from "./client";
-import type { Role } from "./schema";
+import { type Role, users } from "./schema";
 
 /** An invite token; store the hash, email the plaintext once. */
 export function generateInviteToken(): { plaintext: string; hash: string } {
@@ -56,14 +56,6 @@ export async function resolveInvite(db: Db, plaintext: string): Promise<Resolved
   };
 }
 
-/** Whether a live invite exists for this email; gates sign-up. */
-export async function emailInvited(db: Db, email: string): Promise<boolean> {
-  const rows = await db.execute<{ invited: boolean }>(
-    sql`SELECT builder_email_invited(${normalizeEmail(email)}) AS invited`,
-  );
-  return rows[0]?.invited === true;
-}
-
 export interface OrgMember {
   userId: string;
   role: Role;
@@ -88,4 +80,18 @@ export async function orgMembers(tx: Tx): Promise<OrgMember[]> {
     email: row.email,
     name: row.name,
   }));
+}
+
+/** Records who a Keycloak subject is, so member lists can show names and emails. */
+export async function upsertUser(
+  db: Db,
+  user: { id: string; email: string; name: string },
+): Promise<void> {
+  await db
+    .insert(users)
+    .values({ ...user, email: normalizeEmail(user.email) })
+    .onConflictDoUpdate({
+      target: users.id,
+      set: { email: normalizeEmail(user.email), name: user.name, updatedAt: new Date() },
+    });
 }

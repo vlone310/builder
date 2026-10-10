@@ -1,9 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createDb,
   type DbHandle,
-  emailInvited,
   generateApiKey,
   generateInviteToken,
   newId,
@@ -124,7 +124,7 @@ describe.skipIf(!url)("row-level security", () => {
   });
 
   describe("identity lookups", () => {
-    const userId = newId("usr");
+    const userId = randomUUID();
     const email = `${userId}@example.com`;
     const token = generateInviteToken();
 
@@ -155,20 +155,17 @@ describe.skipIf(!url)("row-level security", () => {
       expect(await userMemberships(handle.db, "usr_nobody")).toEqual([]);
     });
 
-    it("resolves live invites by token and gates sign-up by email", async () => {
+    it("resolves live invites by token only", async () => {
       expect(await resolveInvite(handle.db, token.plaintext)).toMatchObject({
         orgId: orgA,
         email: `new-${email}`,
         role: "viewer",
       });
       expect(await resolveInvite(handle.db, "bk_inv_wrong")).toBeNull();
-      expect(await emailInvited(handle.db, `NEW-${email}`)).toBe(true);
-      expect(await emailInvited(handle.db, email)).toBe(false);
       await withOrg(handle.db, orgA, (tx) =>
         tx.update(invites).set({ revokedAt: new Date() }).where(sql`hash = ${token.hash}`),
       );
       expect(await resolveInvite(handle.db, token.plaintext)).toBeNull();
-      expect(await emailInvited(handle.db, `new-${email}`)).toBe(false);
     });
 
     it("joins members with their email for the current org only", async () => {

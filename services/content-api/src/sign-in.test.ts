@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   createDb,
   type DbHandle,
@@ -11,23 +12,45 @@ import {
   withOrg,
 } from "@builder/db";
 import { eq } from "drizzle-orm";
+import { type CryptoKey, createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createContentApp } from "./app";
 import { createEditTokenSigner } from "./edit-tokens";
-import type { EmailMessage } from "./email";
 
 const url = process.env.TEST_DATABASE_URL;
 const jwtSecret = "test-secret-that-is-at-least-32-characters";
-const EDITOR = "http://editor.test";
+const ISSUER = "http://keycloak.test/realms/builder";
+const AUDIENCE = "builder-content-api";
 
-describe.skipIf(!url)("sign-in", () => {
+describe.skipIf(!url)("sign-in with Keycloak", () => {
   let handle: DbHandle;
   let app: ReturnType<typeof createContentApp>;
-  const outbox: EmailMessage[] = [];
+  let privateKey: CryptoKey;
+  let otherKey: CryptoKey;
   const orgId = newId("org");
-  const run = newId("usr").slice(4, 12);
-  const adaEmail = `ada-${run}@example.com`;
-  const bobEmail = `bob-${run}@example.com`;
+  const run = randomUUID().slice(0, 8);
+  const ada = { sub: randomUUID(), email: `ada-${run}@example.com`, name: "Ada Lovelace" };
+  const bob = { sub: randomUUID(), email: `bob-${run}@example.com`, name: "Bob" };
+
+  /** A Keycloak-style access token. */
+  function accessToken(
+    user: { sub: string; email: string; name: string },
+    overrides: { verified?: boolean; issuer?: string; audience?: string; key?: CryptoKey } = {},
+  ) {
+    return new SignJWT({
+      email: user.email,
+      email_verified: overrides.verified ?? true,
+      name: user.name,
+      preferred_username: user.email,
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test" })
+      .setIssuer(overrides.issuer ?? ISSUER)
+      .setAudience(overrides.audience ?? AUDIENCE)
+      .setSubject(user.sub)
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(overrides.key ?? privateKey);
+  }
 
   async function invite(email: string, role: "admin" | "editor" = "editor") {
     const token = generateInviteToken();
@@ -45,52 +68,36 @@ describe.skipIf(!url)("sign-in", () => {
     return token.plaintext;
   }
 
-  function req(method: string, path: string, init: { cookie?: string; body?: unknown } = {}) {
-    return app.request(path, {
+  async function call(method: string, path: string, bearer?: string, body?: unknown) {
+    const response = await app.request(path, {
       method,
-      redirect: "manual",
       headers: {
-        origin: EDITOR,
-        ...(init.cookie ? { cookie: init.cookie } : {}),
-        ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+        ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
-      ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
-  }
-
-  /** Requests a magic link, follows it, and returns the sign-in cookie. */
-  async function signIn(email: string): Promise<string | null> {
-    outbox.length = 0;
-    const sent = await req("POST", "/auth/sign-in/magic-link", {
-      body: { email, callbackURL: `${EDITOR}/` },
-    });
-    expect(sent.status).toBe(200);
-    const message = outbox.find((m) => m.to === email);
-    if (!message) return null;
-    const link = /(http\S+magic-link\/verify\S+)/.exec(message.text)?.[1] as string;
-    const verified = await app.request(link.replace("http://content.test", ""), {
-      redirect: "manual",
-    });
-    expect(verified.status).toBe(302);
-    const cookies = verified.headers.getSetCookie().map((c) => c.split(";")[0]);
-    const session = cookies.find((c) => c?.startsWith("builder.session_token="));
-    return session ?? null;
+    const text = await response.text();
+    // biome-ignore lint/suspicious/noExplicitAny: test responses
+    return { status: response.status, body: (text ? JSON.parse(text) : null) as any };
   }
 
   beforeAll(async () => {
     await runMigrations(url);
     handle = createDb(url);
+    const pair = await generateKeyPair("RS256");
+    privateKey = pair.privateKey;
+    otherKey = (await generateKeyPair("RS256")).privateKey;
+    const publicJwk = { ...(await exportJWK(pair.publicKey)), kid: "test", alg: "RS256" };
     app = createContentApp({
       db: handle.db,
       jwtSecret,
       editTokens: await createEditTokenSigner({ issuer: "http://content.test" }),
-      corsOrigins: [EDITOR],
-      signIn: {
-        secret: "another-test-secret-of-32-characters!",
-        baseUrl: "http://content.test",
-        email: async (message) => {
-          outbox.push(message);
-        },
+      oidc: {
+        issuer: ISSUER,
+        audience: AUDIENCE,
+        editorClientId: "builder-editor",
+        keys: createLocalJWKSet({ keys: [publicJwk] }),
       },
     });
     await withOrg(handle.db, orgId, (tx) => tx.insert(orgs).values({ id: orgId, name: "Acme" }));
@@ -98,120 +105,102 @@ describe.skipIf(!url)("sign-in", () => {
 
   afterAll(async () => {
     await withOrg(handle.db, orgId, (tx) => tx.delete(orgs).where(eq(orgs.id, orgId)));
-    for (const email of [adaEmail, bobEmail]) {
-      await handle.db.delete(users).where(eq(users.email, email));
-    }
+    for (const user of [ada, bob]) await handle.db.delete(users).where(eq(users.id, user.sub));
     await handle.close();
   });
 
-  it("lists the sign-in methods", async () => {
-    expect(await (await req("GET", "/auth/providers")).json()).toEqual({
-      emailLink: true,
-      google: false,
+  it("tells the editor how to sign in", async () => {
+    expect((await call("GET", "/auth/providers")).body).toEqual({
+      oidc: { issuer: ISSUER, clientId: "builder-editor" },
       devLogin: false,
     });
   });
 
-  it("has no dev login when it is off", async () => {
-    const response = await req("POST", "/auth/dev-login", {
-      body: { orgId, userId: "x", role: "admin" },
-    });
-    expect(response.status).toBe(404);
+  it("rejects tokens from another issuer, audience or key, and missing tokens", async () => {
+    expect((await call("GET", "/auth/orgs")).status).toBe(401);
+    for (const overrides of [
+      { issuer: "http://evil.test/realms/builder" },
+      { audience: "account" },
+      { key: otherKey },
+    ]) {
+      expect((await call("GET", "/auth/orgs", await accessToken(ada, overrides))).status).toBe(401);
+    }
+    // A Keycloak token is not an org token.
+    expect((await call("GET", "/v1/sites", await accessToken(ada))).status).toBe(401);
   });
 
-  it("sends no link to an uninvited address and creates no user", async () => {
-    expect(await signIn(`nobody-${run}@example.com`)).toBeNull();
-    const rows = await handle.db
-      .select()
-      .from(users)
-      .where(eq(users.email, `nobody-${run}@example.com`));
-    expect(rows).toEqual([]);
-  });
-
-  it("signs an invited user in, accepts the invite and issues an org token", async () => {
-    const token = await invite(adaEmail, "admin");
-
-    const preview = await req("GET", `/auth/invites/${token}`);
-    expect(await preview.json()).toMatchObject({
+  it("accepts an invite, records the profile and issues an org token", async () => {
+    const token = await invite(ada.email, "admin");
+    expect((await call("GET", `/auth/invites/${token}`)).body).toMatchObject({
       org: { id: orgId, name: "Acme" },
-      email: adaEmail,
+      email: ada.email,
       role: "admin",
     });
 
-    const cookie = await signIn(adaEmail);
-    expect(cookie).toBeTruthy();
-
-    const before = await req("GET", "/auth/orgs", { cookie: cookie as string });
-    expect(await before.json()).toMatchObject({ user: { email: adaEmail }, orgs: [] });
-
-    const accepted = await req("POST", "/auth/invites/accept", {
-      cookie: cookie as string,
-      body: { token },
+    const kc = await accessToken(ada);
+    expect((await call("GET", "/auth/orgs", kc)).body).toEqual({
+      user: { id: ada.sub, email: ada.email, name: ada.name },
+      orgs: [],
     });
-    expect(accepted.status).toBe(200);
-    expect(await accepted.json()).toEqual({ org: { id: orgId, name: "Acme" }, role: "admin" });
 
-    // The invite works once.
-    const again = await req("POST", "/auth/invites/accept", {
-      cookie: cookie as string,
-      body: { token },
-    });
-    expect(again.status).toBe(404);
+    const accepted = await call("POST", "/auth/invites/accept", kc, { token });
+    expect(accepted).toMatchObject({ status: 200, body: { org: { id: orgId }, role: "admin" } });
+    expect((await call("POST", "/auth/invites/accept", kc, { token })).status).toBe(404);
 
-    const orgList = (await (
-      await req("GET", "/auth/orgs", { cookie: cookie as string })
-    ).json()) as {
-      orgs: unknown[];
-    };
-    expect(orgList.orgs).toEqual([{ id: orgId, name: "Acme", role: "admin" }]);
+    expect((await call("GET", "/auth/orgs", kc)).body.orgs).toEqual([
+      { id: orgId, name: "Acme", role: "admin" },
+    ]);
+    const issued = await call("POST", "/auth/token", kc, { orgId });
+    expect(issued.body).toMatchObject({ role: "admin", org: { id: orgId, name: "Acme" } });
+    expect((await call("GET", "/v1/sites", issued.body.token)).status).toBe(200);
 
-    const issued = await req("POST", "/auth/token", {
-      cookie: cookie as string,
-      body: { orgId },
-    });
-    expect(issued.status).toBe(200);
-    const session = (await issued.json()) as { token: string };
-    expect(session).toMatchObject({ role: "admin", org: { id: orgId, name: "Acme" } });
-
-    const sites = await app.request("/v1/sites", {
-      headers: { authorization: `Bearer ${session.token}` },
-    });
-    expect(sites.status).toBe(200);
+    const members = await call("GET", "/v1/members", issued.body.token);
+    expect(members.body.items).toMatchObject([
+      { userId: ada.sub, email: ada.email, name: ada.name, role: "admin" },
+    ]);
   });
 
-  it("refuses an invite meant for someone else", async () => {
-    const forBob = await invite(bobEmail);
-    const adaToken = await invite(adaEmail);
-    const cookie = (await signIn(adaEmail)) as string;
-    const response = await req("POST", "/auth/invites/accept", { cookie, body: { token: forBob } });
-    expect(response.status).toBe(403);
-    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
-      "invite_email_mismatch",
+  it("refuses invites for another address or an unverified email", async () => {
+    const forBob = await invite(bob.email);
+    const mismatch = await call("POST", "/auth/invites/accept", await accessToken(ada), {
+      token: forBob,
+    });
+    expect(mismatch).toMatchObject({
+      status: 403,
+      body: { error: { code: "invite_email_mismatch" } },
+    });
+
+    const unverified = await call(
+      "POST",
+      "/auth/invites/accept",
+      await accessToken(bob, { verified: false }),
+      { token: forBob },
     );
-    // Accepting as an existing member keeps the higher role.
-    await req("POST", "/auth/invites/accept", { cookie, body: { token: adaToken } });
+    expect(unverified).toMatchObject({
+      status: 403,
+      body: { error: { code: "email_not_verified" } },
+    });
+
+    // An existing member keeps the higher role.
+    const lower = await invite(ada.email, "editor");
+    await call("POST", "/auth/invites/accept", await accessToken(ada), { token: lower });
     const [row] = await withOrg(handle.db, orgId, (tx) =>
-      tx.select().from(memberships).where(eq(memberships.orgId, orgId)),
+      tx.select().from(memberships).where(eq(memberships.userId, ada.sub)),
     );
     expect(row?.role).toBe("admin");
   });
 
-  it("refuses tokens for orgs the user is not in, and cookie writes from other origins", async () => {
-    const cookie = (await signIn(adaEmail)) as string;
-    const foreign = await req("POST", "/auth/token", {
-      cookie,
-      body: { orgId: "org_somewhere_else" },
-    });
-    expect(foreign.status).toBe(403);
+  it("refuses org tokens for orgs the user is not in", async () => {
+    const kc = await accessToken(bob);
+    expect((await call("POST", "/auth/token", kc, { orgId })).status).toBe(403);
+  });
 
-    const crossSite = await app.request("/auth/token", {
-      method: "POST",
-      headers: { origin: "https://evil.test", cookie, "content-type": "application/json" },
-      body: JSON.stringify({ orgId }),
+  it("has no dev login when it is off", async () => {
+    const response = await call("POST", "/auth/dev-login", undefined, {
+      orgId,
+      userId: "x",
+      role: "admin",
     });
-    expect(crossSite.status).toBe(403);
-
-    const signedOut = await req("POST", "/auth/token", { body: { orgId } });
-    expect(signedOut.status).toBe(401);
+    expect(response.status).toBe(404);
   });
 });

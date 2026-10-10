@@ -1,13 +1,193 @@
+# Local environment. Start it with `pnpm local:up` (infra only) or
+# `pnpm local:up --app` (everything in containers); see docs/local-environment.md.
+#
+# Infra (default): Postgres, Keycloak, Vault (dev mode), Mailpit.
+# Profile "app": migrations, Content API, Delivery API, worker, sample host, editor,
+# built from the same Dockerfiles as the Kubernetes images. Their secrets come from
+# Vault, rendered into .local/env/*.env by scripts/local/vault-env.sh, the way
+# External Secrets Operator turns Vault paths into Kubernetes Secrets.
+name: builder
+
+x-app-service: &app-service
+  profiles: [app]
+  restart: unless-stopped
+
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16.15
     environment:
       POSTGRES_USER: builder
       POSTGRES_PASSWORD: builder
       POSTGRES_DB: builder
     ports:
-      - "5432:5432"
+      - "${BUILDER_PG_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "builder", "-d", "builder"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  keycloak:
+    build: infra/keycloak
+    image: builder/keycloak:local
+    command: ["start", "--optimized", "--import-realm"]
+    environment:
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      KC_HOSTNAME: http://localhost:8080
+      KC_HTTP_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      BUILDER_EDITOR_URL: http://localhost:5173
+      BUILDER_SMTP_HOST: mailpit
+      BUILDER_SMTP_PORT: "1025"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # The image has no curl. /health/ready turns UP while Keycloak is still
+      # bootstrapping (requests get 503), so wait for the realm itself.
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8080 &&
+          printf 'GET /realms/builder/.well-known/openid-configuration HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          head -1 <&3 | grep -q ' 200 '
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
+  vault:
+    image: hashicorp/vault:2.1.1
+    # Dev mode: in memory, unsealed, root token "dev-root". Secrets are re-seeded
+    # by scripts/local/vault-seed.sh after every restart.
+    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root
+      VAULT_ADDR: http://127.0.0.1:8200
+    cap_add: [IPC_LOCK]
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:v1.31.2
+    ports:
+      - "8025:8025" # web UI
+      - "1025:1025" # SMTP
+
+  migrate:
+    <<: *app-service
+    restart: "no"
+    image: builder/content-api:local
+    command: ["node", "dist/migrate.js"]
+    env_file: [.local/env/content-api.env]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  content-api:
+    <<: *app-service
+    build:
+      context: .
+      args: { SERVICE: content-api }
+    image: builder/content-api:local
+    env_file: [.local/env/content-api.env]
+    environment:
+      PORT: "4000"
+      CONTENT_API_PUBLIC_URL: http://localhost:4000
+      EDITOR_ORIGIN: http://localhost:5173
+      KEYCLOAK_ISSUER: http://localhost:8080/realms/builder
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/builder/protocol/openid-connect/certs
+      EMAIL_FROM: Builder <no-reply@builder.local>
+    ports:
+      - "4000:4000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+    healthcheck: &node-health
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  delivery-api:
+    <<: *app-service
+    build:
+      context: .
+      args: { SERVICE: delivery-api }
+    image: builder/delivery-api:local
+    env_file: [.local/env/delivery-api.env]
+    environment:
+      PORT: "4001"
+    ports:
+      - "4001:4001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck: *node-health
+
+  worker:
+    <<: *app-service
+    build:
+      context: .
+      args: { SERVICE: worker }
+    image: builder/worker:local
+    env_file: [.local/env/worker.env]
+    environment:
+      PORT: "4002"
+      WORKER_POLL_MS: "1000"
+      # The demo webhook targets the sample host on the compose network.
+      WEBHOOK_ALLOW_PRIVATE: "1"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck: *node-health
+
+  sample-host:
+    <<: *app-service
+    build:
+      context: .
+      dockerfile: apps/sample-host/Dockerfile
+    image: builder/sample-host:local
+    env_file: [.local/env/sample-host.env]
+    environment:
+      BUILDER_DELIVERY_URL: http://delivery-api:4001
+      BUILDER_CONTENT_API_URL: http://localhost:4000
+      BUILDER_CONTENT_API_JWKS_URL: http://content-api:4000/.well-known/jwks.json
+      BUILDER_SITE_ID: st_demo
+      BUILDER_ENV: dev
+      BUILDER_LOCALE: en
+      BUILDER_EDITOR_ORIGIN: http://localhost:5173
+    ports:
+      - "3000:3000"
+    depends_on:
+      delivery-api:
+        condition: service_healthy
+
+  editor:
+    <<: *app-service
+    build:
+      context: .
+      dockerfile: apps/editor/Dockerfile
+    image: builder/editor:local
+    environment:
+      CONTENT_API_URL: http://localhost:4000
+    ports:
+      - "5173:8080"
+
 volumes:
   pgdata:

@@ -5,11 +5,12 @@ import { HTTPException } from "hono/http-exception";
 import { authMiddleware } from "./auth";
 import { devLoginRoute } from "./dev-login";
 import { type EditTokenSigner, editTokenRoutes, jwksRoute } from "./edit-tokens";
+import type { EmailSender } from "./email";
 import { ApiError, type AppEnv } from "./http";
 import { memberRoutes } from "./members";
 import { pageRoutes } from "./pages";
 import { publishingRoutes } from "./publishing";
-import { createAuth, type SignInOptions, signInRoutes } from "./sign-in";
+import { type OidcOptions, signInRoutes } from "./sign-in";
 import { siteRoutes } from "./sites";
 
 export interface ContentAppOptions {
@@ -22,8 +23,10 @@ export interface ContentAppOptions {
   devLogin?: boolean;
   /** The editor's base URL for invite links; defaults to the first CORS origin. */
   editorUrl?: string;
-  /** Real sign-in (Better Auth) under /auth/*. */
-  signIn?: Omit<SignInOptions, "db" | "trustedOrigins">;
+  /** Sign-in with Keycloak (OIDC) under /auth/*. */
+  oidc?: OidcOptions;
+  /** Sends invite emails; without it invites only return their link. */
+  email?: EmailSender;
 }
 
 export function createContentApp({
@@ -32,7 +35,8 @@ export function createContentApp({
   editTokens,
   corsOrigins = [],
   devLogin = false,
-  signIn,
+  oidc,
+  email,
   editorUrl = corsOrigins[0] ?? "http://localhost:5173",
 }: ContentAppOptions) {
   const app = new Hono<AppEnv>();
@@ -44,8 +48,6 @@ export function createContentApp({
         origin: corsOrigins,
         allowHeaders: ["authorization", "content-type"],
         allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-        // The sign-in cookie rides along on /auth/* calls from the editor.
-        credentials: true,
         maxAge: 600,
       }),
     );
@@ -55,22 +57,20 @@ export function createContentApp({
   app.route("/", jwksRoute(editTokens));
   // Which sign-in methods the editor should offer.
   app.get("/auth/providers", (c) =>
-    c.json({ emailLink: Boolean(signIn), google: Boolean(signIn?.google), devLogin }),
+    c.json({
+      oidc: oidc ? { issuer: oidc.issuer, clientId: oidc.editorClientId } : null,
+      devLogin,
+    }),
   );
   if (devLogin) app.route("/", devLoginRoute(db, jwtSecret));
-  if (signIn) {
-    const options: SignInOptions = { ...signIn, db, trustedOrigins: corsOrigins };
-    const auth = createAuth(options);
-    app.route("/", signInRoutes(auth, options, jwtSecret));
-    app.on(["GET", "POST"], "/auth/*", (c) => auth.handler(c.req.raw));
-  }
+  if (oidc) app.route("/", signInRoutes({ db, oidc, jwtSecret }));
 
   app.use("/v1/*", authMiddleware(jwtSecret));
   app.route("/v1", siteRoutes(db));
   app.route("/v1", pageRoutes(db));
   app.route("/v1", editTokenRoutes(db, editTokens));
   app.route("/v1", publishingRoutes(db));
-  app.route("/v1", memberRoutes({ db, editorUrl, email: signIn?.email }));
+  app.route("/v1", memberRoutes({ db, editorUrl, email }));
 
   app.notFound((c) => c.json({ error: { code: "not_found", message: "Route not found" } }, 404));
   app.onError((error, c) => {

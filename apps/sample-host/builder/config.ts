@@ -7,6 +7,8 @@ export function builderConfig() {
   };
   return {
     contentApiUrl: value("BUILDER_CONTENT_API_URL", "http://localhost:4000"),
+    // Optional: the Content API's keys at an internal address (cluster, docker compose).
+    contentApiJwksUrl: process.env.BUILDER_CONTENT_API_JWKS_URL || undefined,
     deliveryUrl: value("BUILDER_DELIVERY_URL", "http://localhost:4001"),
     deliveryKey: value("BUILDER_DELIVERY_KEY"),
     siteId: value("BUILDER_SITE_ID", "st_demo"),
