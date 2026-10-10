@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
 
 /**
@@ -8,6 +9,8 @@ import { defineConfig } from "@playwright/test";
 const databaseUrl =
   process.env.E2E_DATABASE_URL ?? "postgres://builder:builder@localhost:5432/builder_e2e";
 const jwtSecret = "e2e-secret-that-is-at-least-32-characters-long";
+/** The Content API writes sign-in and invite emails here; tests read the links. */
+export const EMAIL_OUTBOX = fileURLToPath(new URL("results/outbox.jsonl", import.meta.url));
 
 export default defineConfig({
   testDir: "tests",
@@ -38,6 +41,8 @@ export default defineConfig({
         CONTENT_API_PUBLIC_URL: "http://localhost:4000",
         EDITOR_ORIGIN: "http://localhost:5173",
         CONTENT_API_DEV_LOGIN: "1",
+        BETTER_AUTH_SECRET: "e2e-sign-in-secret-of-at-least-32-characters",
+        EMAIL_OUTBOX_FILE: EMAIL_OUTBOX,
       },
     },
     {

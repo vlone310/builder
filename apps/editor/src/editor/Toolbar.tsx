@@ -1,5 +1,6 @@
 import { ArrowLeft, Monitor, Redo2, Smartphone, Tablet, Undo2 } from "lucide-react";
 import { useState } from "react";
+import { useApi } from "../lib/session";
 import { useEditor, type Viewport } from "../store/editor";
 import { Button, cx } from "../ui";
 import { SharePreview } from "./SharePreview";
@@ -28,6 +29,7 @@ export function Toolbar() {
   const canRedo = useEditor((s) => s.redoStack.length > 0);
   const publishedAt = useEditor((s) => s.publishedAt);
   const [publishing, setPublishing] = useState(false);
+  const canPublish = useApi().can("content.publish");
   const [publishError, setPublishError] = useState<string | null>(null);
 
   async function publish() {
@@ -110,13 +112,15 @@ export function Toolbar() {
         {SAVE_LABEL[save.status]}
       </span>
       <SharePreview />
-      <Button
-        variant="primary"
-        onClick={publish}
-        disabled={publishing || save.status === "conflict" || save.status === "locked"}
-      >
-        {publishing ? "Publishing…" : "Publish"}
-      </Button>
+      {canPublish && (
+        <Button
+          variant="primary"
+          onClick={publish}
+          disabled={publishing || save.status === "conflict" || save.status === "locked"}
+        >
+          {publishing ? "Publishing…" : "Publish"}
+        </Button>
+      )}
       {publishError && <span className="text-xs text-danger">{publishError}</span>}
       {publishedAt && !publishError && !publishing && (
         <span className="text-xs text-green-700">Published</span>

@@ -53,6 +53,10 @@ export function createContentApp({
 
   app.get("/health", (c) => c.json({ ok: true }));
   app.route("/", jwksRoute(editTokens));
+  // Which sign-in methods the editor should offer.
+  app.get("/auth/providers", (c) =>
+    c.json({ emailLink: Boolean(signIn), google: Boolean(signIn?.google), devLogin }),
+  );
   if (devLogin) app.route("/", devLoginRoute(db, jwtSecret));
   if (signIn) {
     const options: SignInOptions = { ...signIn, db, trustedOrigins: corsOrigins };

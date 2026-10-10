@@ -1,16 +1,44 @@
-import type { PageDocument, PageNode, PageSeo } from "@builder/core";
+import type { PageDocument, PageNode, PageSeo, Role } from "@builder/core";
 
 export const CONTENT_API_URL = (
   import.meta.env.VITE_CONTENT_API_URL ?? "http://localhost:4000"
 ).replace(/\/+$/, "");
 
-export type Role = "admin" | "developer" | "editor" | "viewer";
+export type { Role };
 
 export interface Session {
   token: string;
+  /** When the token expires; dev-login tokens leave it out (they last 12 hours). */
+  expiresAt?: string;
   userId: string;
   role: Role;
   org: { id: string; name: string };
+  user?: { email: string; name: string };
+  /** "sign-in" sessions refresh their token with the sign-in cookie. */
+  via: "dev" | "sign-in";
+}
+
+export interface OrgChoice {
+  id: string;
+  name: string;
+  role: Role;
+}
+
+export interface Member {
+  userId: string;
+  role: Role;
+  createdAt: string;
+  email: string | null;
+  name: string | null;
+}
+
+export interface Invite {
+  id: string;
+  email: string;
+  role: Role;
+  invitedBy: string;
+  expiresAt: string;
+  createdAt: string;
 }
 
 export interface Site {
@@ -82,7 +110,9 @@ const SESSION_KEY = "builder.session";
 export function loadSession(): Session | null {
   try {
     const raw = sessionStorage.getItem(SESSION_KEY);
-    return raw ? (JSON.parse(raw) as Session) : null;
+    if (!raw) return null;
+    const session = JSON.parse(raw) as Session;
+    return { ...session, via: session.via ?? "dev" };
   } catch {
     return null;
   }
@@ -102,9 +132,11 @@ async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  credentials: RequestCredentials = "omit",
 ): Promise<T> {
   const response = await fetch(`${CONTENT_API_URL}${path}`, {
     method,
+    credentials,
     headers: {
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(body !== undefined ? { "content-type": "application/json" } : {}),
@@ -134,9 +166,64 @@ export function devLogin(input: { orgId: string; userId: string; role: Role }) {
   );
 }
 
-export function createApi(token: string) {
-  const call = <T>(method: string, path: string, body?: unknown) =>
-    request<T>(token, method, path, body);
+/**
+ * Sign-in calls. They carry the Content API's sign-in cookie (same site as the
+ * editor), never a bearer token.
+ */
+const withCookie = <T>(method: string, path: string, body?: unknown) =>
+  request<T>(null, method, path, body, "include");
+
+export const auth = {
+  providers: () =>
+    request<{ emailLink: boolean; google: boolean; devLogin: boolean }>(
+      null,
+      "GET",
+      "/auth/providers",
+    ),
+  sendLink: (email: string, callbackURL: string) =>
+    withCookie<{ status: boolean }>("POST", "/auth/sign-in/magic-link", {
+      email,
+      callbackURL,
+      errorCallbackURL: callbackURL,
+    }),
+  google: (callbackURL: string) =>
+    withCookie<{ url: string }>("POST", "/auth/sign-in/social", {
+      provider: "google",
+      callbackURL,
+      errorCallbackURL: callbackURL,
+    }),
+  /** The signed-in user and their orgs; 401 when signed out. */
+  orgs: () =>
+    withCookie<{ user: { id: string; email: string; name: string }; orgs: OrgChoice[] }>(
+      "GET",
+      "/auth/orgs",
+    ),
+  token: (orgId: string) =>
+    withCookie<{
+      token: string;
+      expiresAt: string;
+      userId: string;
+      role: Role;
+      org: { id: string; name: string };
+      user: { email: string; name: string };
+    }>("POST", "/auth/token", { orgId }),
+  invite: (token: string) =>
+    request<{ org: { id: string; name: string }; email: string; role: Role; expiresAt: string }>(
+      null,
+      "GET",
+      `/auth/invites/${encodeURIComponent(token)}`,
+    ),
+  acceptInvite: (token: string) =>
+    withCookie<{ org: { id: string; name: string }; role: Role }>("POST", "/auth/invites/accept", {
+      token,
+    }),
+  signOut: () => withCookie<unknown>("POST", "/auth/sign-out", {}),
+};
+
+/** An API client; getToken returns a valid org token (refreshing it when due). */
+export function createApi(getToken: () => Promise<string>) {
+  const call = async <T>(method: string, path: string, body?: unknown) =>
+    request<T>(await getToken(), method, path, body);
   return {
     sites: () => call<{ items: Site[] }>("GET", "/v1/sites"),
     site: (siteId: string) => call<Site>("GET", `/v1/sites/${siteId}`),
@@ -192,6 +279,17 @@ export function createApi(token: string) {
           envId,
         },
       ),
+    members: () => call<{ items: Member[] }>("GET", "/v1/members"),
+    setMemberRole: (userId: string, role: Role) =>
+      call<{ userId: string; role: Role }>("PATCH", `/v1/members/${encodeURIComponent(userId)}`, {
+        role,
+      }),
+    removeMember: (userId: string) =>
+      call<void>("DELETE", `/v1/members/${encodeURIComponent(userId)}`),
+    invites: () => call<{ items: Invite[] }>("GET", "/v1/invites"),
+    createInvite: (email: string, role: Role) =>
+      call<Invite & { url: string; emailed: boolean }>("POST", "/v1/invites", { email, role }),
+    revokeInvite: (inviteId: string) => call<void>("POST", `/v1/invites/${inviteId}/revoke`),
   };
 }
 

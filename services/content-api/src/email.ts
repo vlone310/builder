@@ -1,3 +1,5 @@
+import { appendFile } from "node:fs/promises";
+
 export interface EmailMessage {
   to: string;
   subject: string;
@@ -29,6 +31,13 @@ export function consoleSender(): EmailSender {
     console.log(
       `[email] to=${message.to} subject=${JSON.stringify(message.subject)}\n${message.text}`,
     );
+  };
+}
+
+/** Development and e2e: appends each email as a JSON line to a file. */
+export function fileSender(path: string): EmailSender {
+  return async (message) => {
+    await appendFile(path, `${JSON.stringify({ ...message, sentAt: new Date().toISOString() })}\n`);
   };
 }
 

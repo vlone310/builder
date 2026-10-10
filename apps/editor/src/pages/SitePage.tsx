@@ -8,7 +8,7 @@ import { useAsync } from "./useAsync";
 import { WebhooksPanel } from "./WebhooksPanel";
 
 export function SitePage({ siteId }: { siteId: string }) {
-  const { api, session } = useApi();
+  const { api, can } = useApi();
   const data = useAsync(async () => {
     const [site, environments, pages] = await Promise.all([
       api.site(siteId),
@@ -21,7 +21,7 @@ export function SitePage({ siteId }: { siteId: string }) {
   const [creating, setCreating] = useState(false);
   const environment =
     data.data?.environments.find((e) => e.id === envId) ?? data.data?.environments[0];
-  const canEdit = session.role !== "viewer";
+  const canEdit = can("content.edit");
 
   const open = (pageId: string) =>
     navigate(`/pages/${pageId}${environment ? `?env=${environment.id}` : ""}`);
@@ -89,9 +89,7 @@ export function SitePage({ siteId }: { siteId: string }) {
               ))}
               {data.data.pages.length === 0 && <li className="p-4 text-muted">No pages yet.</li>}
             </ul>
-            {(session.role === "admin" || session.role === "developer") && (
-              <WebhooksPanel api={api} siteId={siteId} />
-            )}
+            {can("site.configure") && <WebhooksPanel api={api} siteId={siteId} />}
           </>
         )}
       </main>

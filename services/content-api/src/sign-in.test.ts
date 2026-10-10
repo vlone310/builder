@@ -104,6 +104,14 @@ describe.skipIf(!url)("sign-in", () => {
     await handle.close();
   });
 
+  it("lists the sign-in methods", async () => {
+    expect(await (await req("GET", "/auth/providers")).json()).toEqual({
+      emailLink: true,
+      google: false,
+      devLogin: false,
+    });
+  });
+
   it("sends no link to an uninvited address and creates no user", async () => {
     expect(await signIn(`nobody-${run}@example.com`)).toBeNull();
     const rows = await handle.db
