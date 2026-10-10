@@ -58,6 +58,7 @@ const app = createContentApp({
         },
       }
     : {}),
+  ...(process.env.EDITOR_URL ? { editorUrl: process.env.EDITOR_URL } : {}),
   corsOrigins: (process.env.EDITOR_ORIGIN ?? "")
     .split(",")
     .map((origin) => origin.trim())

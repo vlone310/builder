@@ -143,7 +143,11 @@ describe.skipIf(!url)("sign-in", () => {
     });
     expect(again.status).toBe(404);
 
-    const orgList = await (await req("GET", "/auth/orgs", { cookie: cookie as string })).json();
+    const orgList = (await (
+      await req("GET", "/auth/orgs", { cookie: cookie as string })
+    ).json()) as {
+      orgs: unknown[];
+    };
     expect(orgList.orgs).toEqual([{ id: orgId, name: "Acme", role: "admin" }]);
 
     const issued = await req("POST", "/auth/token", {
@@ -151,7 +155,7 @@ describe.skipIf(!url)("sign-in", () => {
       body: { orgId },
     });
     expect(issued.status).toBe(200);
-    const session = await issued.json();
+    const session = (await issued.json()) as { token: string };
     expect(session).toMatchObject({ role: "admin", org: { id: orgId, name: "Acme" } });
 
     const sites = await app.request("/v1/sites", {
@@ -166,7 +170,9 @@ describe.skipIf(!url)("sign-in", () => {
     const cookie = (await signIn(adaEmail)) as string;
     const response = await req("POST", "/auth/invites/accept", { cookie, body: { token: forBob } });
     expect(response.status).toBe(403);
-    expect((await response.json()).error.code).toBe("invite_email_mismatch");
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      "invite_email_mismatch",
+    );
     // Accepting as an existing member keeps the higher role.
     await req("POST", "/auth/invites/accept", { cookie, body: { token: adaToken } });
     const [row] = await withOrg(handle.db, orgId, (tx) =>

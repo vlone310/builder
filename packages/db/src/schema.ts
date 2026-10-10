@@ -1,4 +1,4 @@
-import type { PageDocument } from "@builder/core";
+import { type PageDocument, type Role, roles } from "@builder/core";
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
@@ -30,8 +30,7 @@ const siteId = () =>
     .notNull()
     .references(() => sites.id, { onDelete: "cascade" });
 
-export const roles = ["admin", "developer", "editor", "viewer"] as const;
-export type Role = (typeof roles)[number];
+export { type Role, roles };
 export const pageKinds = ["page", "region"] as const;
 export const revisionStatuses = ["draft", "published", "archived"] as const;
 export type RevisionStatus = (typeof revisionStatuses)[number];

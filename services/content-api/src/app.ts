@@ -6,6 +6,7 @@ import { authMiddleware } from "./auth";
 import { devLoginRoute } from "./dev-login";
 import { type EditTokenSigner, editTokenRoutes, jwksRoute } from "./edit-tokens";
 import { ApiError, type AppEnv } from "./http";
+import { memberRoutes } from "./members";
 import { pageRoutes } from "./pages";
 import { publishingRoutes } from "./publishing";
 import { createAuth, type SignInOptions, signInRoutes } from "./sign-in";
@@ -19,6 +20,8 @@ export interface ContentAppOptions {
   corsOrigins?: string[];
   /** Mount the passwordless dev login. Never in production. */
   devLogin?: boolean;
+  /** The editor's base URL for invite links; defaults to the first CORS origin. */
+  editorUrl?: string;
   /** Real sign-in (Better Auth) under /auth/*. */
   signIn?: Omit<SignInOptions, "db" | "trustedOrigins">;
 }
@@ -30,6 +33,7 @@ export function createContentApp({
   corsOrigins = [],
   devLogin = false,
   signIn,
+  editorUrl = corsOrigins[0] ?? "http://localhost:5173",
 }: ContentAppOptions) {
   const app = new Hono<AppEnv>();
 
@@ -62,6 +66,7 @@ export function createContentApp({
   app.route("/v1", pageRoutes(db));
   app.route("/v1", editTokenRoutes(db, editTokens));
   app.route("/v1", publishingRoutes(db));
+  app.route("/v1", memberRoutes({ db, editorUrl, email: signIn?.email }));
 
   app.notFound((c) => c.json({ error: { code: "not_found", message: "Route not found" } }, 404));
   app.onError((error, c) => {

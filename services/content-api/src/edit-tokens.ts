@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { type CryptoKey, exportJWK, generateKeyPair, importJWK, type JWK, SignJWT } from "jose";
 import { z } from "zod";
-import { type AppEnv, notFound, parseJson, requireRole } from "./http";
+import { type AppEnv, notFound, parseJson, requirePermission } from "./http";
 
 /** Audience every edit token carries; hosts reject tokens without it. */
 export const EDIT_TOKEN_AUDIENCE = "builder-host";
@@ -60,7 +60,7 @@ export function editTokenRoutes(db: Db, signer: EditTokenSigner) {
 
   /** A short-lived token that lets one host environment enter edit mode for this user. */
   app.post("/edit-tokens", async (c) => {
-    const { orgId, userId } = requireRole(c, "edit");
+    const { orgId, userId } = requirePermission(c, "content.edit");
     const { siteId, envId } = await parseJson(c, createEditTokenSchema);
     const [environment] = await withOrg(db, orgId, (tx) =>
       tx

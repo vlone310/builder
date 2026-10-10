@@ -21,7 +21,14 @@ import {
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
-import { ApiError, type AppEnv, isUniqueViolation, notFound, parseJson, requireRole } from "./http";
+import {
+  ApiError,
+  type AppEnv,
+  isUniqueViolation,
+  notFound,
+  parseJson,
+  requirePermission,
+} from "./http";
 import { requireSite } from "./sites";
 
 /** How long a soft page lock lasts without renewal. */
@@ -172,7 +179,7 @@ export function pageRoutes(db: Db) {
   });
 
   app.post("/sites/:siteId/pages", async (c) => {
-    const { orgId, userId } = requireRole(c, "edit");
+    const { orgId, userId } = requirePermission(c, "content.edit");
     const input = await parseJson(c, createPageSchema);
     const siteId = c.req.param("siteId");
     try {
@@ -233,7 +240,7 @@ export function pageRoutes(db: Db) {
   });
 
   app.patch("/pages/:pageId", async (c) => {
-    const { orgId, userId } = requireRole(c, "edit");
+    const { orgId, userId } = requirePermission(c, "content.edit");
     const input = await parseJson(c, updatePageSchema);
     try {
       const page = await withOrg(db, orgId, async (tx) => {
@@ -271,7 +278,7 @@ export function pageRoutes(db: Db) {
   });
 
   app.delete("/pages/:pageId", async (c) => {
-    const { orgId, userId } = requireRole(c, "edit");
+    const { orgId, userId } = requirePermission(c, "content.edit");
     await withOrg(db, orgId, async (tx) => {
       const page = await lockPage(tx, c.req.param("pageId"));
       assertNotLockedByOther(page, userId);
@@ -289,7 +296,7 @@ export function pageRoutes(db: Db) {
   });
 
   app.post("/pages/:pageId/lock", async (c) => {
-    const { orgId, userId } = requireRole(c, "edit");
+    const { orgId, userId } = requirePermission(c, "content.edit");
     const { force } = await parseJson(c, lockSchema);
     const page = await withOrg(db, orgId, async (tx) => {
       const page = await lockPage(tx, c.req.param("pageId"));
@@ -306,7 +313,7 @@ export function pageRoutes(db: Db) {
   });
 
   app.delete("/pages/:pageId/lock", async (c) => {
-    const { orgId, userId } = requireRole(c, "edit");
+    const { orgId, userId } = requirePermission(c, "content.edit");
     await withOrg(db, orgId, async (tx) => {
       const page = await lockPage(tx, c.req.param("pageId"));
       if (page.lockHolder === userId) {
@@ -381,7 +388,7 @@ export function pageRoutes(db: Db) {
   });
 
   app.put("/pages/:pageId/draft", async (c) => {
-    const { orgId, userId } = requireRole(c, "edit");
+    const { orgId, userId } = requirePermission(c, "content.edit");
     const input = await parseJson(c, saveDraftSchema);
     const result = await withOrg(db, orgId, async (tx) => {
       const page = await lockPage(tx, c.req.param("pageId"));
@@ -409,7 +416,7 @@ export function pageRoutes(db: Db) {
   });
 
   app.post("/pages/:pageId/publish", async (c) => {
-    const { orgId } = requireRole(c, "edit");
+    const { orgId } = requirePermission(c, "content.publish");
     const { revisionId } = await parseJson(c, publishSchema);
     const page = await withOrg(db, orgId, async (tx) => {
       const page = await lockPage(tx, c.req.param("pageId"));
@@ -443,7 +450,7 @@ export function pageRoutes(db: Db) {
   });
 
   app.post("/pages/:pageId/unpublish", async (c) => {
-    const { orgId } = requireRole(c, "edit");
+    const { orgId } = requirePermission(c, "content.publish");
     const page = await withOrg(db, orgId, async (tx) => {
       const page = await lockPage(tx, c.req.param("pageId"));
       if (page.publishedRevisionId) {

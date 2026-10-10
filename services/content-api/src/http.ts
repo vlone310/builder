@@ -1,3 +1,4 @@
+import { can, type Permission } from "@builder/core";
 import type { Role } from "@builder/db";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -44,16 +45,11 @@ export async function parseJson<S extends z.ZodType>(c: Context, schema: S): Pro
   return result.data;
 }
 
-const WRITE_ROLES: Record<"edit" | "manage" | "admin", readonly Role[]> = {
-  edit: ["admin", "developer", "editor"],
-  manage: ["admin", "developer"],
-  admin: ["admin"],
-};
-
-export function requireRole(c: Context<AppEnv>, level: keyof typeof WRITE_ROLES): Auth {
+/** The caller's auth, if their role grants the permission (see @builder/core permissions). */
+export function requirePermission(c: Context<AppEnv>, permission: Permission): Auth {
   const auth = c.get("auth");
-  if (!WRITE_ROLES[level].includes(auth.role)) {
-    throw new ApiError(403, "forbidden", `Role ${auth.role} cannot do this`);
+  if (!can(auth.role, permission)) {
+    throw new ApiError(403, "forbidden", `Role ${auth.role} cannot do this (${permission})`);
   }
   return auth;
 }
