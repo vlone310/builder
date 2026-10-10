@@ -13,7 +13,8 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "db:migrate": "pnpm --filter @builder/db migrate",
-    "db:seed": "pnpm --filter @builder/db seed"
+    "db:seed": "pnpm --filter @builder/db seed",
+    "e2e": "pnpm --filter @builder/e2e e2e"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

@@ -7,3 +7,4 @@ dist/
 .env.local
 coverage/
 next-env.d.ts
+e2e/results/

@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createContentApp } from "./app";
 import { signSessionToken } from "./auth";
+import { createEditTokenSigner } from "./edit-tokens";
 
 const url = process.env.TEST_DATABASE_URL;
 const secret = "test-secret-that-is-at-least-32-characters";
@@ -34,7 +35,11 @@ describe.skipIf(!url)("Content API", () => {
   beforeAll(async () => {
     await runMigrations(url);
     handle = createDb(url);
-    app = createContentApp({ db: handle.db, jwtSecret: secret });
+    app = createContentApp({
+      db: handle.db,
+      jwtSecret: secret,
+      editTokens: await createEditTokenSigner({ issuer: "http://content.test" }),
+    });
     for (const id of [orgId, otherOrgId]) {
       await withOrg(handle.db, id, (tx) => tx.insert(orgs).values({ id, name: id }));
     }

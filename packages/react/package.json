@@ -8,7 +8,13 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./edit": {
+      "types": "./dist/edit.d.ts",
+      "import": "./dist/edit.js",
+      "default": "./dist/edit.js"
     }
   },
   "files": [
@@ -35,6 +41,7 @@
     "tsup": "8.5.1",
     "typescript": "5.9.3",
     "vitest": "5.0.3",
-    "zod": "4.6.5"
+    "zod": "4.6.5",
+    "jsdom": "30.1.2"
   }
 }
