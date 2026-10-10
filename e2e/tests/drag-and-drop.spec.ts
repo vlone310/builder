@@ -107,14 +107,16 @@ test("moves a node with the selection handle and with the keyboard", async ({ pa
     x: odds.x,
     y: odds.box.y + odds.box.height + 2,
   });
-  await expect
-    .poll(async () => (await outline(canvas)).indexOf("Football odds"))
-    .toBeGreaterThan((await outline(canvas)).indexOf("[odds]"));
+  // Rendering crosses the iframe asynchronously, so poll the order rather than read it once.
+  const headingAfterTable = async () => {
+    const order = await outline(canvas);
+    return order.indexOf("Football odds") > order.indexOf("[odds]");
+  };
+  await expect.poll(headingAfterTable).toBe(true);
 
   // Alt+ArrowUp moves it back one step.
   await page.locator("body").press("Alt+ArrowUp");
-  const order = await outline(canvas);
-  expect(order.indexOf("Football odds")).toBeLessThan(order.indexOf("[odds]"));
+  await expect.poll(headingAfterTable).toBe(false);
   await waitSaved(page);
 });
 
