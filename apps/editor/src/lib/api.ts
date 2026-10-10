@@ -1,16 +1,53 @@
-import type { PageDocument, PageNode, PageSeo } from "@builder/core";
+import type { PageDocument, PageNode, PageSeo, Role } from "@builder/core";
+
+declare global {
+  interface Window {
+    /** Set by /config.js, which the container writes from its environment. */
+    __BUILDER_CONFIG__?: { contentApiUrl?: string };
+  }
+}
 
 export const CONTENT_API_URL = (
-  import.meta.env.VITE_CONTENT_API_URL ?? "http://localhost:4000"
+  window.__BUILDER_CONFIG__?.contentApiUrl ||
+  import.meta.env.VITE_CONTENT_API_URL ||
+  "http://localhost:4000"
 ).replace(/\/+$/, "");
 
-export type Role = "admin" | "developer" | "editor" | "viewer";
+export type { Role };
 
 export interface Session {
   token: string;
+  /** When the token expires; dev-login tokens leave it out (they last 12 hours). */
+  expiresAt?: string;
   userId: string;
   role: Role;
   org: { id: string; name: string };
+  user?: { email: string; name: string };
+  /** "sign-in" sessions refresh their org token with the Keycloak token. */
+  via: "dev" | "sign-in";
+}
+
+export interface OrgChoice {
+  id: string;
+  name: string;
+  role: Role;
+}
+
+export interface Member {
+  userId: string;
+  role: Role;
+  createdAt: string;
+  email: string | null;
+  name: string | null;
+}
+
+export interface Invite {
+  id: string;
+  email: string;
+  role: Role;
+  invitedBy: string;
+  expiresAt: string;
+  createdAt: string;
 }
 
 export interface Site {
@@ -82,7 +119,9 @@ const SESSION_KEY = "builder.session";
 export function loadSession(): Session | null {
   try {
     const raw = sessionStorage.getItem(SESSION_KEY);
-    return raw ? (JSON.parse(raw) as Session) : null;
+    if (!raw) return null;
+    const session = JSON.parse(raw) as Session;
+    return { ...session, via: session.via ?? "dev" };
   } catch {
     return null;
   }
@@ -134,9 +173,50 @@ export function devLogin(input: { orgId: string; userId: string; role: Role }) {
   );
 }
 
-export function createApi(token: string) {
-  const call = <T>(method: string, path: string, body?: unknown) =>
-    request<T>(token, method, path, body);
+export interface Providers {
+  /** Keycloak realm and the editor's public client; null when sign-in is off. */
+  oidc: { issuer: string; clientId: string } | null;
+  devLogin: boolean;
+}
+
+/** Sign-in calls; those that need it carry the Keycloak access token. */
+export const auth = {
+  providers: () => request<Providers>(null, "GET", "/auth/providers"),
+  /** The signed-in user and their orgs. */
+  orgs: (keycloakToken: string) =>
+    request<{ user: { id: string; email: string; name: string }; orgs: OrgChoice[] }>(
+      keycloakToken,
+      "GET",
+      "/auth/orgs",
+    ),
+  token: (keycloakToken: string, orgId: string) =>
+    request<{
+      token: string;
+      expiresAt: string;
+      userId: string;
+      role: Role;
+      org: { id: string; name: string };
+      user: { email: string; name: string };
+    }>(keycloakToken, "POST", "/auth/token", { orgId }),
+  invite: (token: string) =>
+    request<{ org: { id: string; name: string }; email: string; role: Role; expiresAt: string }>(
+      null,
+      "GET",
+      `/auth/invites/${encodeURIComponent(token)}`,
+    ),
+  acceptInvite: (keycloakToken: string, token: string) =>
+    request<{ org: { id: string; name: string }; role: Role }>(
+      keycloakToken,
+      "POST",
+      "/auth/invites/accept",
+      { token },
+    ),
+};
+
+/** An API client; getToken returns a valid org token (refreshing it when due). */
+export function createApi(getToken: () => Promise<string>) {
+  const call = async <T>(method: string, path: string, body?: unknown) =>
+    request<T>(await getToken(), method, path, body);
   return {
     sites: () => call<{ items: Site[] }>("GET", "/v1/sites"),
     site: (siteId: string) => call<Site>("GET", `/v1/sites/${siteId}`),
@@ -192,6 +272,17 @@ export function createApi(token: string) {
           envId,
         },
       ),
+    members: () => call<{ items: Member[] }>("GET", "/v1/members"),
+    setMemberRole: (userId: string, role: Role) =>
+      call<{ userId: string; role: Role }>("PATCH", `/v1/members/${encodeURIComponent(userId)}`, {
+        role,
+      }),
+    removeMember: (userId: string) =>
+      call<void>("DELETE", `/v1/members/${encodeURIComponent(userId)}`),
+    invites: () => call<{ items: Invite[] }>("GET", "/v1/invites"),
+    createInvite: (email: string, role: Role) =>
+      call<Invite & { url: string; emailed: boolean }>("POST", "/v1/invites", { email, role }),
+    revokeInvite: (inviteId: string) => call<void>("POST", `/v1/invites/${inviteId}/revoke`),
   };
 }
 

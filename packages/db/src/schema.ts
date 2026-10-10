@@ -1,4 +1,4 @@
-import type { PageDocument } from "@builder/core";
+import { type PageDocument, type Role, roles } from "@builder/core";
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
@@ -29,8 +29,7 @@ const siteId = () =>
     .notNull()
     .references(() => sites.id, { onDelete: "cascade" });
 
-export const roles = ["admin", "developer", "editor", "viewer"] as const;
-export type Role = (typeof roles)[number];
+export { type Role, roles };
 export const pageKinds = ["page", "region"] as const;
 export const revisionStatuses = ["draft", "published", "archived"] as const;
 export type RevisionStatus = (typeof revisionStatuses)[number];
@@ -255,6 +254,42 @@ export const previewLinks = pgTable(
   ],
 );
 
+/** An invitation to join an org with a role; the plaintext token is emailed once. */
+export const invites = pgTable(
+  "invites",
+  {
+    id: text("id").primaryKey(),
+    orgId: orgId(),
+    /** Lower-cased; only a user signed in with this email can accept. */
+    email: text("email").notNull(),
+    role: text("role", { enum: roles }).notNull(),
+    hash: text("hash").notNull(),
+    invitedBy: text("invited_by").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    acceptedBy: text("accepted_by"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("invites_hash_uq").on(t.hash), index("invites_org_idx").on(t.orgId)],
+);
+
+/**
+ * People, as Keycloak knows them: id is the Keycloak subject. The Content API
+ * refreshes name and email on each sign-in so member lists can show them. A
+ * person is one user across orgs, so this table carries no org_id and
+ * builder_app has no access; memberships tie users to orgs.
+ */
+export const users = pgTable("users", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  name: text("name").notNull().default(""),
+  createdAt: createdAt(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const identityTables = ["users"] as const;
+
 export const tenantTables = [
   "orgs",
   "memberships",
@@ -268,4 +303,5 @@ export const tenantTables = [
   "webhooks",
   "jobs",
   "preview_links",
+  "invites",
 ] as const;

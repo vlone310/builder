@@ -15,7 +15,7 @@ import {
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
-import { type AppEnv, notFound, parseJson, requireRole } from "./http";
+import { type AppEnv, notFound, parseJson, requirePermission } from "./http";
 import { requireSite } from "./sites";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -57,7 +57,7 @@ export function publishingRoutes(db: Db) {
   const app = new Hono<AppEnv>();
 
   app.get("/sites/:siteId/webhooks", async (c) => {
-    const { orgId } = requireRole(c, "manage");
+    const { orgId } = requirePermission(c, "site.configure");
     const rows = await withOrg(db, orgId, (tx) =>
       tx
         .select()
@@ -69,7 +69,7 @@ export function publishingRoutes(db: Db) {
   });
 
   app.post("/sites/:siteId/webhooks", async (c) => {
-    const { orgId } = requireRole(c, "manage");
+    const { orgId } = requirePermission(c, "site.configure");
     const input = await parseJson(c, createWebhookSchema);
     const siteId = c.req.param("siteId");
     const secret = generateWebhookSecret();
@@ -86,7 +86,7 @@ export function publishingRoutes(db: Db) {
   });
 
   app.delete("/webhooks/:webhookId", async (c) => {
-    const { orgId } = requireRole(c, "manage");
+    const { orgId } = requirePermission(c, "site.configure");
     const deleted = await withOrg(db, orgId, (tx) =>
       tx
         .delete(webhooks)
@@ -99,7 +99,7 @@ export function publishingRoutes(db: Db) {
 
   /** The delivery log: the most recent jobs for this endpoint, newest first. */
   app.get("/webhooks/:webhookId/deliveries", async (c) => {
-    const { orgId } = requireRole(c, "manage");
+    const { orgId } = requirePermission(c, "site.configure");
     const rows = await withOrg(db, orgId, async (tx) => {
       const [webhook] = await tx
         .select({ id: webhooks.id })
@@ -146,7 +146,7 @@ export function publishingRoutes(db: Db) {
   });
 
   app.post("/pages/:pageId/preview-links", async (c) => {
-    const { orgId, userId } = requireRole(c, "edit");
+    const { orgId, userId } = requirePermission(c, "content.edit");
     const input = await parseJson(c, createPreviewSchema);
     const { plaintext, hash } = generatePreviewToken();
     const result = await withOrg(db, orgId, async (tx) => {
@@ -205,7 +205,7 @@ export function publishingRoutes(db: Db) {
   });
 
   app.post("/preview-links/:linkId/revoke", async (c) => {
-    const { orgId } = requireRole(c, "edit");
+    const { orgId } = requirePermission(c, "content.edit");
     const [row] = await withOrg(db, orgId, (tx) =>
       tx
         .update(previewLinks)

@@ -3,6 +3,7 @@ export * from "./delivery-client";
 export * from "./document";
 export * from "./fields";
 export * from "./patch";
+export * from "./permissions";
 export * from "./protocol";
 export * from "./publishing";
 export * from "./registry";

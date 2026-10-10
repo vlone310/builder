@@ -1,7 +1,18 @@
 import { CURRENT_SCHEMA_VERSION, type PageDocument, richTextFromString } from "@builder/core";
 import { eq } from "drizzle-orm";
 import { type Db, hashApiKey, newId, withOrg } from "./client";
-import { apiKeys, environments, orgs, pages, revisions, sites, webhooks } from "./schema";
+import { upsertUser } from "./identity";
+import {
+  apiKeys,
+  environments,
+  memberships,
+  orgs,
+  pages,
+  type Role,
+  revisions,
+  sites,
+  webhooks,
+} from "./schema";
 
 export const DEMO_ORG_ID = "org_demo";
 export const DEMO_SITE_ID = "st_demo";
@@ -98,8 +109,21 @@ const demoPages: Array<{
   },
 ];
 
+export interface DemoOptions {
+  /** Where the worker reaches the host's revalidate route (inside docker compose: the host's service name). */
+  webhookUrl?: string;
+  /** People to make members of the demo org, e.g. a Keycloak user for local sign-in. */
+  members?: { userId: string; email: string; name?: string; role: Role }[];
+}
+
 /** Recreates the demo org with a site, a dev environment, a delivery key and two published pages. */
-export async function seedDemo(db: Db): Promise<{ deliveryKey: string }> {
+export async function seedDemo(
+  db: Db,
+  options: DemoOptions = {},
+): Promise<{ deliveryKey: string }> {
+  for (const member of options.members ?? []) {
+    await upsertUser(db, { id: member.userId, email: member.email, name: member.name ?? "" });
+  }
   await withOrg(db, DEMO_ORG_ID, async (tx) => {
     await tx.delete(orgs).where(eq(orgs.id, DEMO_ORG_ID));
     await tx.insert(orgs).values({ id: DEMO_ORG_ID, name: "Demo Sportsbook" });
@@ -116,7 +140,7 @@ export async function seedDemo(db: Db): Promise<{ deliveryKey: string }> {
       id: newId("wh"),
       orgId: DEMO_ORG_ID,
       siteId: DEMO_SITE_ID,
-      url: DEMO_WEBHOOK_URL,
+      url: options.webhookUrl ?? DEMO_WEBHOOK_URL,
       secret: DEMO_WEBHOOK_SECRET,
       events: ["page.published", "page.unpublished"],
     });
@@ -127,6 +151,11 @@ export async function seedDemo(db: Db): Promise<{ deliveryKey: string }> {
       kind: "delivery",
       hash: hashApiKey(DEMO_DELIVERY_KEY),
     });
+    for (const member of options.members ?? []) {
+      await tx
+        .insert(memberships)
+        .values({ orgId: DEMO_ORG_ID, userId: member.userId, role: member.role });
+    }
 
     for (const page of demoPages) {
       const revisionId = newId("rev");

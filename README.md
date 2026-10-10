@@ -27,47 +27,45 @@ Postgres 16. The editor uses Vite, Tailwind, Radix, Zustand and TipTap.
 
 ## Getting started
 
-Requires Node 22.12+, pnpm 10 and Postgres 16 (or Docker).
+Requires Node 22.12+, pnpm 10 and Docker. The full guide is
+[docs/local-environment.md](docs/local-environment.md).
 
 ```sh
 pnpm install
-docker compose up -d                      # Postgres on localhost:5432 (builder/builder)
+pnpm local:up --app      # Postgres, Keycloak, Vault, Mailpit and every app, in Docker
+```
 
-cp packages/db/.env.example packages/db/.env
+Open the editor at http://localhost:5173 and sign in as `admin@builder.local` / `builder`, an
+admin of the demo org. Pick the demo site and a page: the host app loads in the canvas, and you
+can drag components in, edit props, undo, and publish. Publishing reaches http://localhost:3000
+within about a second, because the worker sends the demo webhook to the host, which revalidates
+the page.
+
+http://localhost:3000/sports/football includes an `acme/not-installed@1` node. It renders
+nothing on the live site and logs a warning, as the page model requires.
+
+To work on the apps, start only the infra and run them on the host:
+
+```sh
+pnpm local:up            # infra, Vault secrets, Keycloak user, migrations, demo data
+
 cp services/delivery-api/.env.example services/delivery-api/.env
-cp services/content-api/.env.example services/content-api/.env   # set CONTENT_API_JWT_SECRET
+cp services/content-api/.env.example services/content-api/.env
 cp services/worker/.env.example services/worker/.env
 cp apps/sample-host/.env.example apps/sample-host/.env.local
 cp apps/editor/.env.example apps/editor/.env
-
-pnpm db:migrate
-pnpm db:seed                              # demo org, site, delivery key and two published pages
-pnpm build
-pnpm --filter @builder/delivery-api start # :4001
-pnpm --filter @builder/content-api start  # :4000
-pnpm --filter @builder/worker start       # :4002, delivers webhooks
-pnpm --filter @builder/sample-host start  # :3000
-pnpm --filter @builder/editor preview     # :5173
+pnpm dev
 ```
 
-Open http://localhost:3000 and http://localhost:3000/sports/football. The football page includes
-an `acme/not-installed@1` node: it renders nothing on the live site and logs a warning, as the
-page model requires.
-
-Publishing from the editor reaches http://localhost:3000 within about a second: the worker
-sends the seeded demo webhook to the host, which revalidates the page.
-
-Open the editor at http://localhost:5173 and sign in with org `org_demo` and any user id (the
-dev sign-in is on in `.env.example`; never enable it in production). Pick the demo site and a
-page: the host app loads in the canvas, and you can drag components in, edit props, undo, and
-publish.
+`pnpm db:seed` on its own recreates the demo org without the Keycloak admin; run
+`pnpm local:up` again to restore it. The development sign-in (`CONTENT_API_DEV_LOGIN=1` in the
+example env) works too, with org `org_demo` and any user id. Never enable it in production.
 
 For development, `pnpm dev` runs all packages in watch mode.
 
 ### Calling the Content API
 
-Until the auth service exists, get a session token from the dev script (signed with
-`CONTENT_API_JWT_SECRET`):
+For scripts, get a session token from the dev script (signed with `CONTENT_API_JWT_SECRET`):
 
 ```sh
 TOKEN=$(pnpm -s --filter @builder/content-api token --org org_demo --role editor --user me)
@@ -82,14 +80,21 @@ curl -X POST localhost:4000/v1/pages/<page id>/publish \
   -d '{"revisionId":"<revision id>"}'
 ```
 
-The host shows the page after its ISR window (60 s). Publish webhooks will make this immediate
-in phase 3.
+The worker delivers the publish webhook, so the host shows the page within about a second.
 
 ## Content API (v1)
 
-All routes need `Authorization: Bearer <session token>` with claims `sub`, `org`, `role`.
-Roles: `admin` manages sites; `admin` and `developer` manage environments and API keys;
-`admin`, `developer` and `editor` edit and publish; `viewer` reads.
+All routes need `Authorization: Bearer <session token>` with claims `sub`, `org`, `role`. The
+editor gets that token from sign-in (below). Every member can read; writes need a permission
+from the matrix in `packages/core/src/permissions.ts`:
+
+| Permission | Roles | Covers |
+| --- | --- | --- |
+| `content.edit` | admin, developer, editor | Pages, drafts, locks, preview links, edit tokens |
+| `content.publish` | admin, developer, editor | Publish and unpublish |
+| `site.configure` | admin, developer | Environments, API keys, webhooks |
+| `site.create` | admin | New sites |
+| `members.manage` | admin | Invites, roles, removing members |
 
 | Method | Route | Notes |
 | --- | --- | --- |
@@ -113,12 +118,36 @@ Roles: `admin` manages sites; `admin` and `developer` manage environments and AP
 | GET | `/v1/webhooks/:webhookId/deliveries` | The last 50 deliveries with status, attempts and errors |
 | GET, POST | `/v1/pages/:pageId/preview-links` | `{ revisionId?, envId?, expiresInHours? }` → a share URL with a token, returned once |
 | POST | `/v1/preview-links/:linkId/revoke` | |
+| GET | `/v1/members` | Members with email and name |
+| PATCH, DELETE | `/v1/members/:userId` | `{ role }`; the last admin can be neither demoted nor removed |
+| GET, POST | `/v1/invites` | `{ email, role }`; emails the link and returns it; replaces a live invite to the same address |
+| POST | `/v1/invites/:inviteId/revoke` | |
 
 Publishing, unpublishing, moving a published page's slug and deleting a published page each
 queue a signed webhook per endpoint and a CDN purge, in the same transaction.
 
 Outside `/v1`: `GET /.well-known/jwks.json` (public keys for edit tokens) and, only with
 `CONTENT_API_DEV_LOGIN=1`, `POST /auth/dev-login { orgId, userId, role }`.
+
+### Sign-in
+
+Keycloak owns accounts; the builder database owns org membership and roles.
+
+1. The editor signs in with Keycloak: realm `builder`, public client `builder-editor`,
+   authorization code with PKCE (`oidc-client-ts`). An audience mapper puts
+   `builder-content-api` in the access token.
+2. `GET /auth/orgs` (with `Authorization: Bearer <Keycloak access token>`) lists the user's orgs.
+   The Content API verifies the token against the realm's JWKS (`KEYCLOAK_ISSUER`,
+   `KEYCLOAK_AUDIENCE`, optional internal `KEYCLOAK_JWKS_URL`) and records the user's name and
+   email in `users`.
+3. `POST /auth/token { orgId }` returns a 15-minute org token for the API. The editor refreshes it
+   in the background with a fresh Keycloak token, so role changes apply within 15 minutes.
+4. An admin invites an email address with a role. The person opens the invite link
+   (`<editor>/#/invite/<token>`), signs in or registers in Keycloak with that address (verified),
+   and `POST /auth/invites/accept { token }` makes them a member.
+
+`GET /auth/providers` tells the editor the issuer and client id, and whether the dev login is on.
+Invite emails go out over SMTP (`SMTP_URL`, `EMAIL_FROM`); without it they are printed to the log.
 
 ## Delivery API (v1)
 
@@ -142,7 +171,7 @@ Every table carries `org_id`. Services run tenant queries through `withOrg(db, o
 which opens a transaction, switches to the `builder_app` role and sets `app.org_id`; Postgres
 row-level security then limits every statement to that org. API keys are resolved before the
 org is known through a `SECURITY DEFINER` function that matches only on the key hash.
-`packages/db/src/rls.test.ts` checks that every table has RLS on and that orgs cannot read or
+`packages/db/src/rls.test.ts` checks that every tenant table has RLS on and that orgs cannot read or
 write each other's rows.
 
 ## Editing (phase 2)

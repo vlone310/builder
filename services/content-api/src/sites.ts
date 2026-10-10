@@ -13,7 +13,14 @@ import {
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
-import { ApiError, type AppEnv, isUniqueViolation, notFound, parseJson, requireRole } from "./http";
+import {
+  ApiError,
+  type AppEnv,
+  isUniqueViolation,
+  notFound,
+  parseJson,
+  requirePermission,
+} from "./http";
 
 const localeSchema = z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/, "Invalid locale");
 
@@ -52,7 +59,7 @@ export function siteRoutes(db: Db) {
   });
 
   app.post("/sites", async (c) => {
-    const { orgId } = requireRole(c, "admin");
+    const { orgId } = requirePermission(c, "site.create");
     const input = await parseJson(c, createSiteSchema);
     const [site] = await withOrg(db, orgId, (tx) =>
       tx
@@ -88,7 +95,7 @@ export function siteRoutes(db: Db) {
   });
 
   app.post("/sites/:siteId/environments", async (c) => {
-    const { orgId } = requireRole(c, "manage");
+    const { orgId } = requirePermission(c, "site.configure");
     const input = await parseJson(c, createEnvironmentSchema);
     const siteId = c.req.param("siteId");
     try {
@@ -116,7 +123,7 @@ export function siteRoutes(db: Db) {
   });
 
   app.get("/sites/:siteId/api-keys", async (c) => {
-    const { orgId } = requireRole(c, "manage");
+    const { orgId } = requirePermission(c, "site.configure");
     const rows = await withOrg(db, orgId, (tx) =>
       tx
         .select({
@@ -134,7 +141,7 @@ export function siteRoutes(db: Db) {
   });
 
   app.post("/sites/:siteId/api-keys", async (c) => {
-    const { orgId } = requireRole(c, "manage");
+    const { orgId } = requirePermission(c, "site.configure");
     const { kind } = await parseJson(c, createApiKeySchema);
     const siteId = c.req.param("siteId");
     const { plaintext, hash } = generateApiKey(kind);
@@ -150,7 +157,7 @@ export function siteRoutes(db: Db) {
   });
 
   app.post("/api-keys/:keyId/revoke", async (c) => {
-    const { orgId } = requireRole(c, "manage");
+    const { orgId } = requirePermission(c, "site.configure");
     const [row] = await withOrg(db, orgId, (tx) =>
       tx
         .update(apiKeys)

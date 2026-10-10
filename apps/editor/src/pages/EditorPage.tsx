@@ -9,10 +9,10 @@ import { useAsync } from "./useAsync";
 const LOCK_RENEW_MS = 60_000;
 
 export function EditorPage({ pageId, envId }: { pageId: string; envId: string | null }) {
-  const { api, session } = useApi();
+  const { api, can } = useApi();
   const [lockHolder, setLockHolder] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
-  const readOnly = session.role === "viewer";
+  const readOnly = !can("content.edit");
 
   const data = useAsync(async () => {
     const page = await api.page(pageId);

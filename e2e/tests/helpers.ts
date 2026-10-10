@@ -6,7 +6,7 @@ export async function signIn(page: Page, role = "editor", userId = "e2e") {
   await page.getByLabel("User id").fill(userId);
   await page.getByLabel("Role").click();
   await page.getByRole("option", { name: role, exact: true }).click();
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("button", { name: "Dev sign in" }).click();
   await expect(page.getByRole("heading", { name: "Sites" })).toBeVisible();
 }
 
@@ -70,4 +70,22 @@ export async function reseed() {
   }).catch(() => null);
   // Before the host is up (global setup) there is nothing cached to drop.
   if (response && !response.ok) throw new Error(`Host revalidate failed: ${response.status}`);
+}
+
+/** The newest email to an address in the Content API's e2e outbox. */
+export async function lastEmailTo(to: string): Promise<{ subject: string; text: string }> {
+  const { readFile } = await import("node:fs/promises");
+  const { EMAIL_OUTBOX } = await import("../playwright.config");
+  let found: { to: string; subject: string; text: string } | undefined;
+  await expect
+    .poll(async () => {
+      const lines = (await readFile(EMAIL_OUTBOX, "utf8")).split("\n").filter(Boolean);
+      found = lines
+        .map((line) => JSON.parse(line) as { to: string; subject: string; text: string })
+        .reverse()
+        .find((message) => message.to === to);
+      return found !== undefined;
+    })
+    .toBe(true);
+  return found as { subject: string; text: string };
 }

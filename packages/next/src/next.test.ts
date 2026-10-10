@@ -172,6 +172,17 @@ describe("rewriteEditRequest", () => {
       rewriteEditRequest(new NextRequest("http://host.test/a")).headers.get("x-middleware-rewrite"),
     ).toBeNull();
   });
+
+  it("lets only the editor frame the edit route, decided at request time", () => {
+    const response = rewriteEditRequest(
+      new NextRequest("http://host.test/a?builder.edit=tok"),
+      "/builder-edit",
+      "https://editor.example.com",
+    );
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'self' https://editor.example.com",
+    );
+  });
 });
 
 describe("createRevalidateHandler", () => {
