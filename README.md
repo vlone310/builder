@@ -27,44 +27,39 @@ Postgres 16. The editor uses Vite, Tailwind, Radix, Zustand and TipTap.
 
 ## Getting started
 
-Requires Node 22.12+, pnpm 10 and Postgres 16 (or Docker).
+Requires Node 22.12+, pnpm 10 and Docker. The full guide is
+[docs/local-environment.md](docs/local-environment.md).
 
 ```sh
 pnpm install
-docker compose up -d                      # Postgres on localhost:5432 (builder/builder)
+pnpm local:up --app      # Postgres, Keycloak, Vault, Mailpit and every app, in Docker
+```
 
-cp packages/db/.env.example packages/db/.env
+Open the editor at http://localhost:5173 and sign in as `admin@builder.local` / `builder`, an
+admin of the demo org. Pick the demo site and a page: the host app loads in the canvas, and you
+can drag components in, edit props, undo, and publish. Publishing reaches http://localhost:3000
+within about a second, because the worker sends the demo webhook to the host, which revalidates
+the page.
+
+http://localhost:3000/sports/football includes an `acme/not-installed@1` node. It renders
+nothing on the live site and logs a warning, as the page model requires.
+
+To work on the apps, start only the infra and run them on the host:
+
+```sh
+pnpm local:up            # infra, Vault secrets, Keycloak user, migrations, demo data
+
 cp services/delivery-api/.env.example services/delivery-api/.env
-cp services/content-api/.env.example services/content-api/.env   # set CONTENT_API_JWT_SECRET
+cp services/content-api/.env.example services/content-api/.env
 cp services/worker/.env.example services/worker/.env
 cp apps/sample-host/.env.example apps/sample-host/.env.local
 cp apps/editor/.env.example apps/editor/.env
-
-pnpm db:migrate
-pnpm db:seed                              # demo org, site, delivery key and two published pages
-pnpm build
-pnpm --filter @builder/delivery-api start # :4001
-pnpm --filter @builder/content-api start  # :4000
-pnpm --filter @builder/worker start       # :4002, delivers webhooks
-pnpm --filter @builder/sample-host start  # :3000
-pnpm --filter @builder/editor preview     # :5173
+pnpm dev
 ```
 
-Open http://localhost:3000 and http://localhost:3000/sports/football. The football page includes
-an `acme/not-installed@1` node: it renders nothing on the live site and logs a warning, as the
-page model requires.
-
-Publishing from the editor reaches http://localhost:3000 within about a second: the worker
-sends the seeded demo webhook to the host, which revalidates the page.
-
-Open the editor at http://localhost:5173 and use the development sign-in with org `org_demo` and
-any user id (it is on in `.env.example`; never enable it in production). Pick the demo site and a
-page: the host app loads in the canvas, and you can drag components in, edit props, undo, and
-publish.
-
-Real sign-in works locally too. Invite yourself with the dev login's token (`POST /v1/invites`,
-or the editor's Members page as an admin), open the invite link, and request an email link. Without
-`RESEND_API_KEY` the Content API prints the link to its log.
+`pnpm db:seed` on its own recreates the demo org without the Keycloak admin; run
+`pnpm local:up` again to restore it. The development sign-in (`CONTENT_API_DEV_LOGIN=1` in the
+example env) works too, with org `org_demo` and any user id. Never enable it in production.
 
 For development, `pnpm dev` runs all packages in watch mode.
 
@@ -136,24 +131,23 @@ Outside `/v1`: `GET /.well-known/jwks.json` (public keys for edit tokens) and, o
 
 ### Sign-in
 
-[Better Auth](https://better-auth.com) runs inside the Content API at `/auth/*` when
-`BETTER_AUTH_SECRET` is set. It owns identity (`users`, `auth_sessions`, `auth_accounts`,
-`auth_verifications`). Those tables carry no `org_id`, and `builder_app` cannot read them.
-Memberships and roles stay in our tables.
+Keycloak owns accounts; the builder database owns org membership and roles.
 
-1. An admin invites an email address with a role. Only invited addresses can create an account.
-2. The person opens the invite link (`<editor>/#/invite/<token>`) and signs in with an email link
-   (`POST /auth/sign-in/magic-link`), or Google when `GOOGLE_CLIENT_ID` and
-   `GOOGLE_CLIENT_SECRET` are set. Better Auth sets an HttpOnly cookie on the Content API's
-   domain.
-3. `POST /auth/invites/accept { token }` joins the org; the signed-in email must match.
-4. `GET /auth/orgs` lists the user's orgs; `POST /auth/token { orgId }` returns a 15-minute org
-   token, which the editor refreshes in the background. Role changes therefore apply within 15
-   minutes.
+1. The editor signs in with Keycloak: realm `builder`, public client `builder-editor`,
+   authorization code with PKCE (`oidc-client-ts`). An audience mapper puts
+   `builder-content-api` in the access token.
+2. `GET /auth/orgs` (with `Authorization: Bearer <Keycloak access token>`) lists the user's orgs.
+   The Content API verifies the token against the realm's JWKS (`KEYCLOAK_ISSUER`,
+   `KEYCLOAK_AUDIENCE`, optional internal `KEYCLOAK_JWKS_URL`) and records the user's name and
+   email in `users`.
+3. `POST /auth/token { orgId }` returns a 15-minute org token for the API. The editor refreshes it
+   in the background with a fresh Keycloak token, so role changes apply within 15 minutes.
+4. An admin invites an email address with a role. The person opens the invite link
+   (`<editor>/#/invite/<token>`), signs in or registers in Keycloak with that address (verified),
+   and `POST /auth/invites/accept { token }` makes them a member.
 
-The cookie routes accept writes only from `EDITOR_ORIGIN`. The editor and the Content API must
-be on the same site (for example `editor.<domain>` and `content.<domain>`) so the cookie is
-sent.
+`GET /auth/providers` tells the editor the issuer and client id, and whether the dev login is on.
+Invite emails go out over SMTP (`SMTP_URL`, `EMAIL_FROM`); without it they are printed to the log.
 
 ## Delivery API (v1)
 

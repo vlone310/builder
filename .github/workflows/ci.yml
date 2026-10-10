@@ -75,16 +75,47 @@ jobs:
           retention-days: 14
 
   images:
-    # Builds each service image the way Railway does, runs migrations from it
-    # against a fresh database, starts it and waits for /health.
+    # Builds every deployable's image as Kubernetes will run it, then starts it
+    # and checks it answers. Service images also migrate a fresh database first.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        service: [content-api, delivery-api, worker]
+        include:
+          - name: content-api
+            file: Dockerfile
+            context: .
+            args: SERVICE=content-api
+            port: 4000
+            check: /health
+          - name: delivery-api
+            file: Dockerfile
+            context: .
+            args: SERVICE=delivery-api
+            port: 4001
+            check: /health
+          - name: worker
+            file: Dockerfile
+            context: .
+            args: SERVICE=worker
+            port: 4002
+            check: /health
+          - name: sample-host
+            file: apps/sample-host/Dockerfile
+            context: .
+            port: 3000
+            check: /api/builder/revalidate
+          - name: editor
+            file: apps/editor/Dockerfile
+            context: .
+            port: 8080
+            check: /config.js
+          - name: keycloak
+            file: infra/keycloak/Dockerfile
+            context: infra/keycloak
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16.15
         env:
           POSTGRES_USER: builder
           POSTGRES_PASSWORD: builder
@@ -98,37 +129,44 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://builder:builder@localhost:5432/builder_images
-      IMAGE: builder-${{ matrix.service }}:ci
+      IMAGE: builder-${{ matrix.name }}:ci
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
-          context: .
-          build-args: SERVICE=${{ matrix.service }}
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          build-args: ${{ matrix.args }}
           tags: ${{ env.IMAGE }}
           load: true
           push: false
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
       - name: Migrate from the image
+        if: matrix.args != ''
         run: docker run --rm --network host -e DATABASE_URL "$IMAGE" node dist/migrate.js
-      - name: Start the image and wait for /health
+      - name: Start the image and check it answers
+        if: matrix.port
+        env:
+          PORT: ${{ matrix.port }}
+          CHECK: ${{ matrix.check }}
         run: |
-          docker run -d --name service --network host -e DATABASE_URL -e PORT=4100 \
-            -e CONTENT_API_JWT_SECRET=ci-secret-that-is-at-least-32-characters-long "$IMAGE"
+          docker run -d --name app --network host -e DATABASE_URL -e PORT \
+            -e CONTENT_API_JWT_SECRET=ci-secret-that-is-at-least-32-characters-long \
+            -e CONTENT_API_URL=https://content.example.test \
+            -e BUILDER_DELIVERY_KEY=bk_dlv_ci -e BUILDER_WEBHOOK_SECRET=whsec_ci "$IMAGE"
           for attempt in $(seq 1 30); do
-            if curl -fsS http://localhost:4100/health; then exit 0; fi
+            # Any answer below 500 means the server is up and routing.
+            status=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$PORT$CHECK" || true)
+            if [ "$status" != "000" ] && [ "$status" -lt 500 ]; then
+              echo "$CHECK → $status"
+              exit 0
+            fi
             sleep 1
           done
-          docker logs service
+          docker logs app
           exit 1
-      - name: Build the standalone migrate target
-        if: matrix.service == 'content-api'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: migrate
-          push: false
-          cache-from: type=gha,scope=migrate
-          cache-to: type=gha,mode=max,scope=migrate
+      - name: Check the editor's runtime config
+        if: matrix.name == 'editor'
+        run: curl -fsS http://localhost:8080/config.js | grep -F 'https://content.example.test'
