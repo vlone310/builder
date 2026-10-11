@@ -17,6 +17,7 @@ by the platform owner, and every PR below runs on the local environment alone.
 | Domains | A new dedicated domain on Cloudflare, with subdomains per service |
 | CDN | Cloudflare in front of the Delivery API; purge by tag |
 | CLI | Loads the tenant's registry module locally; `check` runs tenant migrations in tenant CI |
+| CI | Self-hosted GitLab (Docker executor), images pushed to Harbor (`docs/gitlab-ci.md`) |
 | Assets | Inside the Content API (no new deployable). Any S3-compatible store: MinIO locally, R2 or in-cluster MinIO in production. Image transformations optional, behind a URL helper |
 | Registry | Built by the platform owner. This repo owns its contract (types and an in-memory stub in `@builder/core`) |
 | Second tenant | Deferred until after the prototype |
@@ -76,7 +77,8 @@ Gate: a breaking component change fails `builder check` in a tenant's CI.
 1. **Export endpoint.** A site-scoped `cli` key reads every draft and published tree.
 2. **`@builder/cli`.** `push` loads the tenant's registry module through jiti and sends it to the
    Registry. `check` pulls the trees, runs the tenant's migrations and validation locally, and
-   lists failing pages and nodes. A GitHub Actions template runs check, deploy, then push.
+   lists failing pages and nodes. A GitLab CI template for tenant repositories runs check, deploy,
+   then push.
 3. **Editor.** The palette comes from the Registry before the iframe loads; a banner warns on a
    `manifestHash` mismatch; deprecated components leave the palette but still render.
 4. **Migrated props.** A `migrated` message (host → editor) reports props the host upgraded at
@@ -99,7 +101,7 @@ Gate: an editor builds a page with an uploaded image and edits a shared region, 
 Gate: the checklist in `docs/pilot-deployment.md` passes on the real stack.
 
 Starts once the cluster, domain and charts exist. Expected work: fixes found while deploying,
-the Registry URL and S3 settings in place, and image pushes from CI to the registry.
+and the Registry URL and S3 settings in place.
 
 ## After the prototype
 

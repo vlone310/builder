@@ -25,8 +25,9 @@ docker build -f apps/editor/Dockerfile -t builder/editor .
 docker build -t builder/keycloak infra/keycloak
 ```
 
-CI builds every image on each pull request and starts each one (`images` job in
-`.github/workflows/ci.yml`). Pushing to a registry is not set up yet.
+CI builds every image on each merge request, starts each one, and pushes the images that
+answered to Harbor as `<harbor>/<project>/<name>:<commit sha>` (`images` job in `.gitlab-ci.yml`,
+see `docs/gitlab-ci.md`).
 
 ## Probes
 
