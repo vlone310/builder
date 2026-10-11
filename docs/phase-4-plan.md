@@ -1,7 +1,8 @@
 # Phase 4 plan: safety and scale
 
-Phase 4 lands in four pull requests. The pilot comes first, because the Phase 3 gate (a first pilot
-tenant serving live pages) is still open. Each sub-phase ends at a gate.
+Phase 4a (sign-in, roles, images) is merged. The rest is replanned so development never waits on
+infrastructure: the cluster, Vault, domain, Registry service and Helm charts are built in parallel
+by the platform owner, and every PR below runs on the local environment alone.
 
 ## Decisions
 
@@ -16,10 +17,11 @@ tenant serving live pages) is still open. Each sub-phase ends at a gate.
 | Domains | A new dedicated domain on Cloudflare, with subdomains per service |
 | CDN | Cloudflare in front of the Delivery API; purge by tag |
 | CLI | Loads the tenant's registry module locally; `check` runs tenant migrations in tenant CI |
-| Assets | Cloudflare R2 with presigned uploads; Cloudflare Images URL transformations |
-| Second tenant | An in-repo affiliate host (`apps/affiliate-host`) |
+| Assets | Inside the Content API (no new deployable). Any S3-compatible store: MinIO locally, R2 or in-cluster MinIO in production. Image transformations optional, behind a URL helper |
+| Registry | Built by the platform owner. This repo owns its contract (types and an in-memory stub in `@builder/core`) |
+| Second tenant | Deferred until after the prototype |
 
-## 4a: Pilot (PR #4)
+## 4a: Pilot (PR #4, merged)
 
 Gate: the pilot gate checklist in `docs/pilot-deployment.md` passes.
 
@@ -36,58 +38,89 @@ Gate: the pilot gate checklist in `docs/pilot-deployment.md` passes.
    Kubernetes (`docs/kubernetes.md`). Kubernetes manifests follow later.
 4. **CI.** Build every image, migrate a fresh database from the service images, and start each
    image to check it answers.
-5. **Pilot gate.** Run the checklist against a local stack shaped like production, then on the
-   real stack once accounts and the domain exist.
+5. **Pilot gate.** Moved to 4e: it needs the real stack.
 
-## 4b: Component safety (PR #5)
+## Who builds what
 
-Gate: a breaking component change fails in tenant CI.
+| Track | Owner | Needs from the other track |
+| --- | --- | --- |
+| Cluster, Vault, ESO, Postgres, image registry, domain, Cloudflare, SMTP | Platform owner | The image contract in `docs/kubernetes.md`, including the S3 settings below |
+| Helm charts | Platform owner | Same; no new deployables in 4b–4d |
+| Registry service | Platform owner | The Registry contract (4b) |
+| 4b–4d below | This repo | Nothing: each runs on `pnpm local:up` |
+| 4e pilot gate | Both | The deployed stack |
 
-1. **Registry.** `builder push` sends manifests with the git SHA using a site-scoped `cli` key.
-   The Registry validates them, stores the manifest hash, and rejects a major bump without a
-   migration from the previous major, or a removed component that pages still use and that was
-   not deprecated first.
-2. **`@builder/cli`.** `push` loads the tenant's registry module through jiti. `check` pulls
-   every draft and published tree through an export endpoint, runs the tenant's migrations and
-   validation locally, and lists failing pages and nodes. A GitHub Actions template runs check,
-   deploy, then push.
+The charts can be written today. The only setting not in `docs/kubernetes.md` yet is the Content
+API's object storage, added there ahead of 4d: `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`,
+`S3_PUBLIC_URL`, `S3_FORCE_PATH_STYLE` (Deployment env) and `S3_ACCESS_KEY_ID`,
+`S3_SECRET_ACCESS_KEY` (Vault `secret/builder/content-api`). The bucket needs CORS allowing `PUT`
+from the editor origin.
+
+## 4b: Registry contract (PR #5, small, first)
+
+Unblocks the Registry service. Gate: the platform owner signs off on the contract.
+
+1. Types and zod schemas in `@builder/core`: a pushed manifest (components, versions, deprecations,
+   manifest hash, git SHA), the push result with rejection reasons, and the read API the editor
+   and CLI use (current manifest per site and environment).
+2. The rules as a pure function: a major bump needs a migration from the previous major; a
+   component pages still use can only be removed after it was deprecated. The Registry service
+   calls the same function, so both sides agree.
+3. An in-memory stub implementing the contract, used by tests and the local environment until
+   the real Registry is deployed. One setting (`BUILDER_REGISTRY_URL`) switches to the real one.
+
+## 4c: Component safety, client side (PR #6)
+
+Gate: a breaking component change fails `builder check` in a tenant's CI.
+
+1. **Export endpoint.** A site-scoped `cli` key reads every draft and published tree.
+2. **`@builder/cli`.** `push` loads the tenant's registry module through jiti and sends it to the
+   Registry. `check` pulls the trees, runs the tenant's migrations and validation locally, and
+   lists failing pages and nodes. A GitHub Actions template runs check, deploy, then push.
 3. **Editor.** The palette comes from the Registry before the iframe loads; a banner warns on a
    `manifestHash` mismatch; deprecated components leave the palette but still render.
-4. **Migrated props.** A new `migrated` message (host → editor) reports props the host upgraded
-   at render, and the editor saves them on the next edit.
+4. **Migrated props.** A `migrated` message (host → editor) reports props the host upgraded at
+   render, and the editor saves them on the next edit.
 
-## 4c: Regions and assets (PR #6)
+## 4d: Regions and assets (PR #7)
+
+Gate: an editor builds a page with an uploaded image and edits a shared region, locally.
 
 1. **Regions.** `<BuilderRegion name>` and `fetchRegion` with cache tags, an edit route for
    regions, a region list and region editing in the editor, a region on a hand-coded page in the
    sample host.
-2. **Assets.** A new `services/assets`: presigned uploads to R2, rows in `assets`, a media
-   library in the editor wired to the `image` field, an SDK image URL helper using Cloudflare
-   Images transformations, MinIO for local development.
+2. **Assets.** Presigned uploads from the Content API to the S3 store, rows in `assets` (RLS per
+   org), a media library in the editor wired to the `image` field, and an SDK image URL helper
+   with a pluggable transformer (none by default, Cloudflare Images optional). MinIO joins the
+   local environment.
 
-## 4d: Follow-ups and second tenant (PR #7)
+## 4e: Pilot gate (PR #8)
 
-Gate: a second tenant from another vertical is onboarded.
+Gate: the checklist in `docs/pilot-deployment.md` passes on the real stack.
 
-1. Firefox and WebKit Playwright projects in CI.
-2. Memoised edit rendering and layout diffs, benchmarked above 150 nodes against the Phase 2
+Starts once the cluster, domain and charts exist. Expected work: fixes found while deploying,
+the Registry URL and S3 settings in place, and image pushes from CI to the registry.
+
+## After the prototype
+
+1. Second tenant from another vertical (`apps/affiliate-host`), onboarded through bootstrap and
+   the CI template, with a cross-tenant isolation e2e test. This was Phase 4's original final
+   gate.
+2. Firefox and WebKit Playwright projects in CI.
+3. Memoised edit rendering and layout diffs, benchmarked above 150 nodes against the Phase 2
    spike thresholds.
-3. A drag-and-drop review build with drop-feel telemetry and a session script; the review
-   itself needs someone who edits pages daily.
-4. `apps/affiliate-host`: an offer table, a comparison block, a tracking-link field and a region
-   on a hand-coded page, onboarded through bootstrap and the push/check CI template, with e2e
-   tests across both tenants including an isolation check.
+4. A drag-and-drop review build with drop-feel telemetry; the review needs someone who edits
+   pages daily.
 
 ## Not in phase 4
 
-`builder codegen`, `builder dev`, Kubernetes manifests (Helm or kustomize), and identity
-brokering in Keycloak (company SSO).
+`builder codegen`, `builder dev`, and identity brokering in Keycloak (company SSO).
 
 ## Inputs needed
 
-These block only the real deploy and the gate run, not the build:
+These block only 4e, not the build:
 
 - The dedicated domain's name.
-- The cluster, its Vault and External Secrets setup, the Postgres offering and the image
-  registry.
+- The cluster, its Vault and External Secrets setup, the Postgres offering, the image registry
+  and the object storage.
 - Who owns the Cloudflare zone and the SMTP account.

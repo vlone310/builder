@@ -291,5 +291,6 @@ They migrate and seed `E2E_DATABASE_URL` themselves. The spike's numbers land in
    drag-and-drop. Gate: drag-and-drop spike review.
 3. **Publish** (built; gate needs the pilot deployment): preview links, signed webhooks, CDN purge, `@builder/next` with draft mode and
    tag revalidation. Gate: a first pilot tenant serves live pages.
-4. **Safety and scale**: `builder push` / `builder check` in CI, Registry, regions, assets,
-   roles. Gate: a second tenant from another vertical.
+4. **Safety and scale** (4a sign-in, roles and images done; plan in `docs/phase-4-plan.md`):
+   Registry contract, `builder push` / `builder check` in CI, regions, assets, pilot gate on the
+   real stack. A second tenant follows the prototype.

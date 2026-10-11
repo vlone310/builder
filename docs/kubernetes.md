@@ -68,6 +68,17 @@ Plain settings go in the Deployment (or a ConfigMap). Secrets live in Vault unde
 | Sample host | `BUILDER_DELIVERY_URL`, `BUILDER_CONTENT_API_URL`, `BUILDER_CONTENT_API_JWKS_URL`, `BUILDER_SITE_ID`, `BUILDER_ENV`, `BUILDER_LOCALE`, `BUILDER_EDITOR_ORIGIN` | `sample-host`: `BUILDER_DELIVERY_KEY`, `BUILDER_WEBHOOK_SECRET` |
 | Keycloak | `KC_DB_URL`, `KC_DB_USERNAME`, `KC_HOSTNAME`, `KC_PROXY_HEADERS=xforwarded`, `KC_HTTP_ENABLED=true`, `KC_BOOTSTRAP_ADMIN_USERNAME`, `BUILDER_EDITOR_URL`, `BUILDER_SMTP_*` | `keycloak`: `KC_DB_PASSWORD`, `KC_BOOTSTRAP_ADMIN_PASSWORD` (and `BUILDER_SMTP_PASSWORD` if SMTP needs auth) |
 
+**Coming in phase 4d (assets):** the Content API also reads object storage settings. They are
+optional until then; add them to the charts now so the release that ships assets needs no chart
+change.
+
+| Kind | Variables |
+| --- | --- |
+| Deployment env | `S3_ENDPOINT` (any S3-compatible API: R2, MinIO, S3), `S3_REGION` (`auto` for R2), `S3_BUCKET`, `S3_PUBLIC_URL` (where browsers fetch objects), `S3_FORCE_PATH_STYLE` (`true` for MinIO) |
+| Vault `secret/builder/content-api` | `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` |
+
+The bucket's CORS must allow `PUT` from the editor origin (browsers upload with presigned URLs).
+
 Never set these in a cluster: `CONTENT_API_DEV_LOGIN`, `EMAIL_OUTBOX_FILE`,
 `WEBHOOK_ALLOW_PRIVATE`.
 
